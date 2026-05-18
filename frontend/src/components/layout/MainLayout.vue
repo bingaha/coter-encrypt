@@ -162,8 +162,9 @@ onUnmounted(() => {
 .main-layout {
  display: flex;
  flex-direction: column;
- height: 100vh;
- width: 100vw;
+ height: 100%;
+ min-height: 0;
+ width: 100%;
  overflow: hidden;
  background-color: var(--n-body-color, #f5f7fa);
 }
@@ -175,6 +176,7 @@ onUnmounted(() => {
 
 .layout-main {
  flex: 1;
+ min-height: 0;
  overflow: hidden;
  display: flex;
 }
@@ -182,9 +184,11 @@ onUnmounted(() => {
 /* Splitpanes 样式覆盖 */
 :deep(.splitpanes) {
  height: 100%;
+ min-height: 0;
 }
 
 :deep(.splitpanes__pane) {
+ min-height: 0;
  background-color: transparent;
 }
 
@@ -225,6 +229,7 @@ onUnmounted(() => {
 /* 面板内容样式 */
 .pane-content {
  height: 100%;
+ min-height: 0;
  overflow: hidden;
  display: flex;
  flex-direction: column;
@@ -249,6 +254,7 @@ onUnmounted(() => {
  display: flex;
  flex-direction: row;
  height: 100%;
+ min-height: 0;
 }
 
 .combined-left {
@@ -256,6 +262,7 @@ onUnmounted(() => {
  min-width: 180px;
  max-width: 280px;
  flex-shrink: 0;
+ min-height: 0;
  background-color: var(--n-card-color, #ffffff);
  border-right: 1px solid var(--n-border-color, #e0e0e6);
  overflow: hidden;
@@ -263,6 +270,8 @@ onUnmounted(() => {
 
 .combined-middle {
  flex: 1;
+ min-width: 0;
+ min-height: 0;
  overflow: hidden;
  background-color: var(--n-body-color, #f5f7fa);
 }
@@ -270,6 +279,7 @@ onUnmounted(() => {
 /* 移动端布局样式 */
 .mobile-layout {
  flex: 1;
+ min-height: 0;
  display: flex;
  flex-direction: column;
  overflow: hidden;
@@ -278,6 +288,7 @@ onUnmounted(() => {
 
 .mobile-layout :deep(.n-tabs) {
  height: 100%;
+ min-height: 0;
  display: flex;
  flex-direction: column;
 }
@@ -290,16 +301,19 @@ onUnmounted(() => {
 
 .mobile-layout :deep(.n-tabs-pane-wrapper) {
  flex: 1;
+ min-height: 0;
  overflow: hidden;
 }
 
 .mobile-layout :deep(.n-tab-pane) {
  height: 100%;
+ min-height: 0;
  padding: 0;
 }
 
 .mobile-pane {
  height: 100%;
+ min-height: 0;
  overflow: auto;
  background-color: var(--n-body-color, #f5f7fa);
 }

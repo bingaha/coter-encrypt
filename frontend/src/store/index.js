@@ -11,6 +11,7 @@ const componentCategories = [
  components: [
  { id: 'base64', name: 'Base64', icon: 'DocumentTextOutline', description: 'Base64 编码/解码' },
  { id: 'hex', name: 'Hex', icon: 'CodeSlashOutline', description: '十六进制编码/解码' },
+ { id: 'radix', name: '进制转换', icon: 'CalculatorOutline', description: '2 到 36 进制数字转换' },
  { id: 'url', name: 'URL', icon: 'LinkOutline', description: 'URL 编码/解码' },
  { id: 'unicode', name: 'Unicode', icon: 'TextOutline', description: 'Unicode 编码/解码' }
  ]
@@ -35,6 +36,7 @@ const componentCategories = [
  collapsed: false,
  components: [
  { id: 'aes', name: 'AES', icon: 'KeyOutline', description: 'AES 对称加密算法' },
+ { id: 'blowfish', name: 'Blowfish', icon: 'KeyOutline', description: 'Blowfish 对称加密算法' },
  { id: 'sm4', name: 'SM4', icon: 'ShieldCheckmarkOutline', description: '国密 SM4 对称加密算法' }
  ]
  },
@@ -366,6 +368,7 @@ export const useConfigStore = defineStore('config', {
  // 参数引用校验（新增）
  switch (component.type) {
  case 'aes':
+ case 'blowfish':
  case 'sm4':
  // 密钥校验：优先检查引用，如果没有引用则检查直接值
  if (!config.keyRef) {
@@ -542,10 +545,37 @@ export const useConfigStore = defineStore('config', {
  inputParam: '',
  outputParam: ''
  }
+ case 'blowfish':
+ return {
+ ...commonInputConfig,
+ operation: 'encrypt',
+ key: '',
+ keyRef: '',
+ mode: 'CBC',
+ iv: '',
+ ivRef: '',
+ padding: 'None',
+ keyFormat: 'text',
+ ivFormat: 'hex',
+ inputFormat: 'hex',
+ outputFormat: 'base64',
+ hexCase: 'uppercase',
+ inputParam: '',
+ outputParam: ''
+ }
  case 'hex':
  return {
  ...commonInputConfig,
  operation: 'encode',
+ inputParam: '',
+ outputParam: ''
+ }
+ case 'radix':
+ return {
+ ...commonInputConfig,
+ inputBase: 10,
+ outputBase: 16,
+ hexCase: 'uppercase',
  inputParam: '',
  outputParam: ''
  }

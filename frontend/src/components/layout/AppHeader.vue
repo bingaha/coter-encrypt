@@ -10,6 +10,7 @@ import {
  NDivider
 } from 'naive-ui'
 import {
+ AppsOutline,
  SaveOutline,
  CopyOutline,
  CodeSlashOutline,
@@ -126,6 +127,14 @@ const handleToggleTheme = () => {
  <div class="app-header">
  <!-- 左侧：Logo 和标题 -->
  <div class="header-left">
+ <n-tooltip trigger="hover">
+ <template #trigger>
+ <router-link class="home-link" to="/">
+ <n-icon><AppsOutline /></n-icon>
+ </router-link>
+ </template>
+ 返回首页
+ </n-tooltip>
  <div class="logo">
  <span class="logo-icon">🔐</span>
  <span class="logo-text">加解密工具</span>
@@ -320,6 +329,23 @@ const handleToggleTheme = () => {
 .header-left {
  display: flex;
  align-items: center;
+ gap: 10px;
+}
+
+.home-link {
+ width: 32px;
+ height: 32px;
+ flex: none;
+ display: grid;
+ place-items: center;
+ border-radius: 6px;
+ color: var(--n-text-color-2, #666666);
+ transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.home-link:hover {
+ color: var(--n-primary-color, #18a058);
+ background-color: var(--n-action-color, rgba(0, 0, 0, 0.04));
 }
 
 .logo {

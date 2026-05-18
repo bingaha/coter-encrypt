@@ -1,33 +1,29 @@
-import axios from 'axios'
+import { invokeApi } from './tauriClient'
 
-const API_BASE_URL = '/api'
-
-// 项目管理API（文件存储版）
+// 项目管理 API：桌面版只通过 Tauri invoke 调用 Rust 命令。
 
 /**
- * 分页查询项目列表
- * @param {number} current - 当前页码
- * @param {number} size - 每页数量
+ * 查询项目列表
  * @returns {Promise} 项目列表
  */
-export const listProjects = () => axios.get(`${API_BASE_URL}/projects/list`)
+export const listProjects = () => invokeApi('list_projects')
 
 /**
- * 根据ID获取项目
- * @param {number} id - 项目ID
+ * 根据 ID 获取项目
+ * @param {number} id - 项目 ID
  * @returns {Promise} 项目详情
  */
 export const getProjectById = (id) => {
- return axios.get(`${API_BASE_URL}/projects/${id}`)
+ return invokeApi('get_project_by_id', { id })
 }
 
 /**
- * 根据名称查询项目 - 需求5.7
+ * 根据名称查询项目
  * @param {string} name - 项目名称
- * @returns {Promise} 项目详情或null
+ * @returns {Promise} 项目详情或 null
  */
 export const getProjectByName = (name) => {
- return axios.get(`${API_BASE_URL}/projects/name/${encodeURIComponent(name)}`)
+ return invokeApi('get_project_by_name', { name })
 }
 
 /**
@@ -36,34 +32,36 @@ export const getProjectByName = (name) => {
  * @returns {Promise} 保存结果
  */
 export const saveProject = (project) => {
- return axios.post(`${API_BASE_URL}/projects`, project)
+ return invokeApi('save_project', { project })
 }
 
 /**
  * 更新项目
- * @param {Object} project - 项目数据（包含id）
+ * @param {Object} project - 项目数据，包含 id
  * @returns {Promise} 更新结果
  */
 export const updateProject = (project) => {
- return axios.put(`${API_BASE_URL}/projects`, project)
+ return invokeApi('update_project', { project })
 }
 
 /**
  * 删除项目
- * @param {number} id - 项目ID
+ * @param {number} id - 项目 ID
  * @returns {Promise} 删除结果
  */
 export const deleteProject = (id) => {
- return axios.delete(`${API_BASE_URL}/projects/${id}`)
+ return invokeApi('delete_project', { id })
 }
 
 /**
- * 重命名项目 - 需求3.7
- * @param {number} id - 项目ID
+ * 重命名项目
+ * @param {number} id - 项目 ID
  * @param {string} newName - 新项目名称
  * @returns {Promise} 重命名结果
  */
-export const renameProject = (id, newName) => axios.put(`${API_BASE_URL}/projects`, { id, name: newName })
+export const renameProject = (id, newName) => {
+ return invokeApi('rename_project', { id, newName })
+}
 
 /**
  * 根据当前工作流配置生成 代码
@@ -71,5 +69,5 @@ export const renameProject = (id, newName) => axios.put(`${API_BASE_URL}/project
  * @returns {Promise} 代码结果
  */
 export const removedGenerateCode = (payload) => {
- return axios.post(`${API_BASE_URL}/projects/generate-`, payload)
+ return invokeApi('removed_command', { payload })
 }

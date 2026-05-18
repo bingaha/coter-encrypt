@@ -20,8 +20,6 @@ import {
  NTooltip,
  NDivider,
  NModal,
- NUpload,
- NUploadDragger,
  NSelect,
  useMessage
 } from 'naive-ui'
@@ -43,6 +41,7 @@ import { isPureText, resolveExpression } from '@/utils/expressionParser.js'
 import { useProjectManager } from '@/composables/useProjectManager'
 import { executeBatch } from '@/api/encrypt'
 import { processHarWithProject } from '@/api/har'
+import { open, save } from '@tauri-apps/plugin-dialog'
 
 // Store
 const configStore = useConfigStore()
@@ -60,12 +59,14 @@ const localValidationErrors = ref([])
 
 // HAR 弹窗相关状态
 const harModalVisible = ref(false)
-const harFileList = ref([])
+const harInputPath = ref('')
+const harOutputPath = ref('')
 const harRegexPreset = ref('BASE64')
 const harInputOriginalRef = ref('')
 const harFinalOutputMappingId = ref('')
 const harInputValues = ref({})
 const harStats = ref(null)
+const isProcessingHar = ref(false)
 
 // 项目保存（用于先保存再处理HAR）
 const { handleSave } = useProjectManager()
@@ -393,6 +394,8 @@ const buildBatchRequest = () => {
  resultFormat: config.resultFormat || null,
  charset: config.charset || null,
  format: config.format || null,
+ inputBase: config.inputBase || null,
+ outputBase: config.outputBase || null,
  shaType: config.shaType || null,
  hmacShaType: config.hmacShaType || null,
  outputLength: config.outputLength || null
@@ -543,27 +546,68 @@ const openHarModal = async () => {
  }
  harInputValues.value = preset
  harStats.value = null
- harFileList.value = []
+ harInputPath.value = ''
+ harOutputPath.value = ''
  harModalVisible.value = true
 }
 
-// 上传变更（仅保留单文件，并做 210MB 前端预校验，避免无谓上传）
-const MAX_HAR_SIZE = 210 * 1024 * 1024 // 210MB，与后端 spring.servlet.multipart 保持一致
-const onHarUploadChange = ({ fileList }) => {
- const latest = fileList.slice(-1)
- const f = latest[0]?.file
- if (f && f.size > MAX_HAR_SIZE) {
- message.error('文件超过 210MB 限制，请压缩或拆分后再试')
- harFileList.value = []
- return
+const buildDefaultHarOutputPath = (inputPath) => {
+ if (!inputPath) return 'processed.har'
+
+ const separatorIndex = Math.max(inputPath.lastIndexOf('\\'), inputPath.lastIndexOf('/'))
+ const directory = separatorIndex >= 0 ? inputPath.slice(0, separatorIndex + 1) : ''
+ const fileName = separatorIndex >= 0 ? inputPath.slice(separatorIndex + 1) : inputPath
+ const dotIndex = fileName.lastIndexOf('.')
+ const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
+ return `${directory}${baseName}_解密.har`
+}
+
+const selectHarInputFile = async () => {
+ try {
+ const selected = await open({
+ multiple: false,
+ filters: [
+ { name: 'HAR / JSON', extensions: ['har', 'json'] }
+ ]
+ })
+ if (!selected) return
+
+ harInputPath.value = Array.isArray(selected) ? selected[0] : selected
+ if (!harOutputPath.value) {
+ harOutputPath.value = buildDefaultHarOutputPath(harInputPath.value)
  }
- harFileList.value = latest
+ } catch (e) {
+ message.error(e?.message || '选择 HAR 文件失败')
+ }
+}
+
+const selectHarOutputFile = async () => {
+ try {
+ const selected = await save({
+ defaultPath: harOutputPath.value || buildDefaultHarOutputPath(harInputPath.value),
+ filters: [
+ { name: 'HAR', extensions: ['har'] },
+ { name: 'JSON', extensions: ['json'] }
+ ]
+ })
+ if (selected) {
+ harOutputPath.value = selected
+ }
+ } catch (e) {
+ message.error(e?.message || '选择保存位置失败')
+ }
 }
 
 // 提交处理
 const submitHarProcessing = async () => {
- if (!harFileList.value.length) {
+ if (isProcessingHar.value) return
+
+ if (!harInputPath.value) {
  message.warning('请先选择 HAR 文件')
+ return
+ }
+ if (!harOutputPath.value) {
+ message.warning('请选择输出保存位置')
  return
  }
  if (!harInputOriginalRef.value) {
@@ -584,39 +628,24 @@ const submitHarProcessing = async () => {
  }
  }
 
- const form = new FormData()
- form.append('file', harFileList.value[0].file)
- if (configStore.currentProjectId) {
- form.append('projectId', configStore.currentProjectId)
- } else if (configStore.currentProjectName) {
- form.append('projectName', configStore.currentProjectName)
- }
- form.append('inputOriginalRef', harInputOriginalRef.value)
- form.append('finalOutputMappingId', harFinalOutputMappingId.value)
- form.append('regexPreset', harRegexPreset.value)
- form.append('inputValues', JSON.stringify(harInputValues.value || {}))
-
  try {
- const { data } = await processHarWithProject(form)
+ isProcessingHar.value = true
+ const { data } = await processHarWithProject({
+ inputPath: harInputPath.value,
+ outputPath: harOutputPath.value,
+ projectId: configStore.currentProjectId || null,
+ projectName: configStore.currentProjectId ? null : configStore.currentProjectName,
+ inputOriginalRef: harInputOriginalRef.value,
+ finalOutputMappingId: harFinalOutputMappingId.value,
+ regexPreset: harRegexPreset.value,
+ inputValues: harInputValues.value || {}
+ })
  harStats.value = data.stats
  message.success(`处理完成：匹配 ${data.stats.matched} 条，成功 ${data.stats.success} 条，失败 ${data.stats.failed} 条`)
- const blob = new Blob([JSON.stringify(data.processedHar, null, 2)], { type: 'application/json' })
- const url = URL.createObjectURL(blob)
- const a = document.createElement('a')
- a.href = url
- a.download = data.fileName || 'processed.har'
- a.click()
- URL.revokeObjectURL(url)
  } catch (e) {
- // 后端全局异常处理中，413 / 400 / 500 均返回 JSON，优先显示 message
- const status = e?.response?.status
- if (status === 413) {
- message.error(e?.response?.data?.message || '上传文件超过后端限制')
- } else if (status === 400) {
- message.error(e?.response?.data?.message || '请求参数有误')
- } else {
- message.error(e?.response?.data?.message || e.message || '处理失败')
- }
+ message.error(e?.message || '处理失败')
+ } finally {
+ isProcessingHar.value = false
  }
 }
 </script>
@@ -870,32 +899,43 @@ const submitHarProcessing = async () => {
  <div class="har-form">
  <n-form label-placement="left" label-width="120">
  <n-form-item label="HAR 文件">
- <n-upload
- :default-upload="false"
- :max="1"
- accept=".har,application/json,application/har"
- v-model:file-list="harFileList"
- @change="onHarUploadChange"
- >
- <n-upload-dragger>
- <div class="har-dragger">
- <n-icon :size="24" style="margin-bottom: 8px"><DocumentTextOutline /></n-icon>
- <n-text depth="3">点击或将 HAR/JSON 文件拖拽到此处</n-text>
- <div v-if="harFileList.length" class="har-selected">
- 已选择：{{ harFileList[0].name }}
- </div>
- </div>
- </n-upload-dragger>
- </n-upload>
+ <n-space vertical style="width: 100%">
+ <n-input
+ v-model:value="harInputPath"
+ readonly
+ placeholder="请选择本地 HAR/JSON 文件"
+ />
+ <n-button secondary :disabled="isProcessingHar" @click="selectHarInputFile">
+ <template #icon>
+ <n-icon><DocumentTextOutline /></n-icon>
+ </template>
+ 选择文件
+ </n-button>
+ </n-space>
+ </n-form-item>
+ <n-form-item label="保存到">
+ <n-space vertical style="width: 100%">
+ <n-input
+ v-model:value="harOutputPath"
+ readonly
+ placeholder="请选择处理后 HAR 的保存位置"
+ />
+ <n-button secondary :disabled="isProcessingHar" @click="selectHarOutputFile">
+ <template #icon>
+ <n-icon><DocumentTextOutline /></n-icon>
+ </template>
+ 选择保存位置
+ </n-button>
+ </n-space>
  </n-form-item>
  <n-form-item label="匹配预设">
- <n-select v-model:value="harRegexPreset" :options="regexOptions" />
+ <n-select v-model:value="harRegexPreset" :options="regexOptions" :disabled="isProcessingHar" />
  </n-form-item>
  <n-form-item label="输入原文">
- <n-select v-model:value="harInputOriginalRef" :options="inputMappingOptions" />
+ <n-select v-model:value="harInputOriginalRef" :options="inputMappingOptions" :disabled="isProcessingHar" />
  </n-form-item>
  <n-form-item label="最终输出">
- <n-select v-model:value="harFinalOutputMappingId" :options="outputMappingOptions" />
+ <n-select v-model:value="harFinalOutputMappingId" :options="outputMappingOptions" :disabled="isProcessingHar" />
  </n-form-item>
 
  <n-divider>输入映射值</n-divider>
@@ -905,7 +945,7 @@ const submitHarProcessing = async () => {
  v-model:value="harInputValues[m.inputRef]"
  type="textarea"
  :rows="2"
- :disabled="m.inputRef === harInputOriginalRef"
+ :disabled="isProcessingHar || m.inputRef === harInputOriginalRef"
  :placeholder="m.inputRef === harInputOriginalRef ? '该项由匹配文本填充' : (m.defaultValue || '请输入')"
  />
  </n-form-item>
@@ -916,7 +956,14 @@ const submitHarProcessing = async () => {
  </n-alert>
 
  <div style="text-align:right; margin-top: 8px;">
- <n-button type="primary" @click="submitHarProcessing">开始处理并下载</n-button>
+ <n-button
+ type="primary"
+ :loading="isProcessingHar"
+ :disabled="isProcessingHar"
+ @click="submitHarProcessing"
+ >
+ {{ isProcessingHar ? '处理中...' : '开始处理并保存' }}
+ </n-button>
  </div>
  </n-form>
  </div>

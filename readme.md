@@ -1,7 +1,11 @@
 
 # 加解密可视化工具
 
-一个基于前后端分离架构的可视化加解密工具，支持多种加密算法，可通过拖拽组件创建工作流，配置参数后执行加密解密操作。
+一个基于 Rust/Tauri + Vue 的桌面可视化加解密工具，支持多种加密算法，可通过拖拽组件创建工作流，配置参数后执行加密解密操作。
+
+当前主线版本不再要求启动 后端，也不要求用户打开浏览器访问 `localhost`。开发期通过 Tauri 加载 Vite 前端页面，生产构建后生成可直接运行的 Windows 桌面程序。
+
+应用启动后首先进入工具台首页（`/`）。当前加解密工具作为首页入口进入 `/encrypt` 二级页面，二级页面提供返回首页功能；后续 OCR、浏览器跳转、固定表查询等独立 Rust/Tauri 功能可按相同入口布局继续扩展。路由切换仍在同一个 Tauri 桌面窗口内完成，不创建多窗口。
 
 ## 功能特性
 
@@ -12,7 +16,9 @@
 - **HmacMD5** - HMAC-MD5 消息认证码
 - **HmacSHA** - HmacSHA系列消息认证码（HmacSHA1/HmacSHA256/HmacSHA384/HmacSHA512）
 - **AES** - 加密/解密（ECB/CBC模式）
+- **Blowfish** - 加密/解密（ECB/CBC模式）
 - **Hex** - 十六进制编码/解码
+- **进制转换** - 2 到 36 进制数字转换
 - **URL** - URL编码/解码（支持UTF-8/GBK/ISO-8859-1字符集）
 - **Unicode** - Unicode编码/解码（支持标准格式/HTML实体/CSS格式）
 - **RSA** - 非对称加密算法（PKCS1/OAEP填充）
@@ -22,17 +28,24 @@
 
 ### 核心功能
 
-1. **单页面工作流设计**
- - 三栏可调整布局：组件库 | 工作流配置 | 执行面板
+1. **工具台首页与路由**
+ - 默认路由 `/` 为工具台首页
+ - 当前提供“加解密工具”入口，跳转到 `/encrypt`
+ - `/encrypt` 二级页面提供返回首页入口
+ - 首页使用可扩展工具入口网格，后续可继续加入 OCR、浏览器跳转、固定表查询等独立功能
+ - 页面切换在同一个 Tauri 窗口内完成，不打开额外窗口
+
+2. **加解密工具工作流设计**
+ - `/encrypt` 页面保留三栏可调整布局：组件库 | 工作流配置 | 执行面板
  - 拖拽式组件添加和排序
  - 实时配置和执行，无需页面切换
 
-2. **组件库**
+3. **组件库**
  - 按类别分组：编码类、哈希类、对称加密、非对称加密
  - 可折叠分类面板
  - 拖拽添加组件到工作流
 
-3. **组件配置**
+4. **组件配置**
  - 组件卡片支持展开/折叠
  - 配置不完整时显示警告徽章
  - 支持键盘快捷键（Delete 删除选中组件）
@@ -45,31 +58,31 @@
  - 转义：使用 `/` 转义特殊字符 `$`、`{`、`}`、`/`
  - 示例：`价格: /$100` 输出为 `价格: $100`
 
-4. **输入映射配置**
+5. **输入映射配置**
  - 在工作流配置区顶部定义全局输入参数
  - 为每个输入映射指定自定义名称
  - 所有组件都可以引用这些输入映射
  - 执行面板会根据输入映射自动生成输入表单
 
-5. **输出配置**
+6. **输出配置**
  - 支持配置多个输出映射
  - 为每个输出指定自定义名称
  - 选择任意组件的输出作为最终结果
 
-6. **项目管理**
+7. **项目管理**
  - 头部项目选择器快速切换项目
  - 保存时自动填充当前项目名
  - 侧边抽屉管理项目列表
  - 支持项目内联重命名
  - 重复名称自动提示覆盖确认
 
-7. **执行面板**
+8. **执行面板**
  - 根据配置自动生成输入表单
  - 执行按钮带加载状态
  - 可折叠执行日志
  - 支持 Ctrl+Enter 快捷执行
 
-8. **主题支持**
+9. **主题支持**
  - 支持亮色/暗色主题切换
  - 主题偏好自动保存
 
@@ -80,12 +93,14 @@
 
 ## 技术栈
 
-### 后端
-- **语言**： 21
-- **框架**：
+### 桌面端与本地业务
+- **语言**：Rust
+- **桌面框架**：Tauri 2
+- **业务调用**：Tauri `invoke` 本地命令
+- **核心逻辑目录**：`crates/coter-core/`
+- **桌面壳目录**：`src-tauri/`
 - **存储**：基于文件的项目配置（无需数据库）
-- **构建工具**：
-- **目录**：``
+- **默认项目目录**：应用配置目录下的 `projects/`（Windows 通常为 `%APPDATA%\coter\CoterEncrypt\config\projects\`）
 
 ### 前端
 - **框架**：Vue 3
@@ -99,85 +114,100 @@
 - **目录**：`frontend/`
 
 ### 架构
-- 前后端分离
-- RESTful API 通信
-- 单页面应用（SPA）
+- Tauri 桌面壳加载 Vue 单页面应用
+- 前端通过 Tauri `invoke` 调用 Rust 本地命令
+- 不依赖 后端运行时
+- 不暴露业务 HTTP API
+- 不需要用户手动打开浏览器访问本地地址
+
+`` 目录保留为旧 / 版本的历史代码和行为参考，可用于算法兼容性对拍或迁移验证；它不是当前 Rust/Tauri 桌面版本的运行依赖。
 
 ## 安装步骤
 
-### 数据库配置
+### 环境要求
 
-当前版本已改为文件存储，无需安装数据库与配置数据源。
+1. **安装 Rust**
+ - 推荐使用稳定版 Rust 工具链。
+ - Windows 需要可用的 MSVC 构建环境。
 
-### 后端安装
+2. **安装 Node.js**
+ - 推荐版本：Node.js 18+。
 
-1. **安装 JDK 21**
- - 下载并安装 JDK 21
+3. **WebView2 Runtime**
+ - Windows 11 通常已内置。
+ - 较旧的 Windows 10 环境如无法启动 Tauri 窗口，需要安装 Microsoft Edge WebView2 Runtime。
 
-2. **安装 **
- - 下载并安装 3.9+
- - 配置 MAVEN_HOME 环境变量
+当前版本使用文件存储，无需安装数据库与配置数据源。
 
-3. **构建后端项目**
- ```bash
- cd 
- mvn clean install
- ```
+### 安装依赖
 
-4. **运行后端服务**
- ```bash
- mvn spring-boot:run
- ```
+在仓库根目录执行：
 
-### 后端配置说明
+```bash
+npm install
+npm --prefix frontend install
+```
 
-- `src/main/resources/application.yml`
- - 通用默认配置，会随 jar 一起打包。
- - 项目配置目录默认指向 `${user.home}/Documents/encryt/projects`。
+### 开发启动
 
-- `src/main/resources/application-dev.yml`
- - 本地开发专用配置。
- - 当前仓库中已将你的本机项目目录放到 `dev` profile 下。
- - 本地开发如需启用，使用：
- ```bash
- mvn spring-boot:run -Dspring-boot.run.profiles=dev
- ```
+在仓库根目录执行：
 
-- `src/packaging/config/application.yml`
- - 发布包外置配置模板。
- - 执行 `mvn package` 时会复制到 `target/config/application.yml`。
- - 运行 jar 时， 会优先读取 `config/application.yml`，可直接在这里改部署环境配置。
+```bash
+npm run tauri:dev
+```
 
-### 前端安装
+该命令会：
 
-1. **安装 Node.js**
- - 推荐版本：Node.js 18+
+1. 启动 Vite 前端开发服务器，用于页面热更新。
+2. 启动 Tauri 桌面窗口。
+3. 在桌面窗口中加载 Vue 页面。
+4. 业务能力通过 Rust/Tauri 本地命令执行。
 
-2. **安装前端依赖**
- ```bash
- cd frontend
- npm install
- ```
+开发期出现的 Vite 本地地址只用于加载前端资源，不代表保留 或业务 HTTP API。
 
-3. **启动前端开发服务器**
- ```bash
- npm run dev
- ```
+### 生产构建
+
+在仓库根目录执行：
+
+```bash
+npm run tauri:build
+```
+
+该命令会先构建 `frontend/dist`，再构建 Rust/Tauri release 程序，并生成 Windows 发布产物。
+
+当前主要输出路径：
+
+```text
+target/release/CoterEncrypt.exe
+target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe
+```
+
+其中：
+
+- `target/release/CoterEncrypt.exe` 可用于开发内测或便携运行。
+- `target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe` 是 NSIS 安装包，适合分发给普通用户。
+
+运行这些产物不需要启动 后端，不需要打开浏览器，也不需要访问 `localhost`。
 
 ## 使用说明
 
-### 1. 创建工作流
+### 1. 从首页进入加解密工具
+1. 启动应用后进入工具台首页
+2. 点击“加解密工具”进入 `/encrypt` 二级页面
+3. 在加解密工具页面可通过头部返回首页入口回到工具台
+
+### 2. 创建工作流
 1. 从左侧组件库拖拽所需组件到中间工作流配置区
 2. 通过拖拽调整组件的执行顺序
 3. 点击组件卡片展开配置面板，设置组件参数
 
-### 2. 配置输入映射
+### 3. 配置输入映射
 在工作流配置区顶部的"输入映射"区域：
 1. 点击"添加输入映射"
 2. 设置输入映射名称（用于执行面板显示）
 3. 可添加多个输入映射供组件引用
 
-### 3. 配置组件参数
+### 4. 配置组件参数
 
 **输入来源配置**（所有组件通用）：
 - **使用输入映射**：选择预定义的输入映射作为输入来源
@@ -219,38 +249,135 @@
 - **HmacMD5**：设置密钥，选择是否输出小写结果，选择输出位数（16位/32位）
 - **HmacSHA**：设置密钥，选择算法类型（HmacSHA1/HmacSHA256/HmacSHA384/HmacSHA512），选择是否输出小写结果
 - **AES**：选择 encrypt/decrypt，设置 mode、key、iv
+- **Blowfish**：选择 encrypt/decrypt，设置 mode、key、iv
 - **SM4**：选择 encrypt/decrypt，设置 mode、key、iv
 - **Hex**：选择 encode 或 decode 操作
+- **进制转换**：设置源进制、目标进制和输出字母大小写（支持 2 到 36 进制，输入可使用 `0b`/`0o`/`0x` 前缀）
 - **URL**：选择 encode/decode，设置字符集（UTF-8/GBK/ISO-8859-1）
 - **Unicode**：选择 encode/decode，设置格式（标准格式/HTML实体/CSS格式）
 - **RSA**：选择 encrypt/decrypt，设置公钥/私钥，填充模式（PKCS1/OAEP）
 - **SM2**：选择 encrypt/decrypt，设置公钥/私钥
 - **SM3**：选择是否输出小写结果
 
-### 4. 配置输出映射
+### 5. 配置输出映射
 在工作流配置区底部的"输出配置"区域：
 1. 点击"添加输出映射"
 2. 设置输出名称和选择组件输出
 3. 可添加多个输出映射
 
-### 5. 执行工作流
+### 6. 执行工作流
 1. 在右侧执行面板填写输入参数（根据输入映射自动生成）
 2. 点击"执行"按钮或按 Ctrl+Enter
 3. 查看执行结果和日志
 
-### 6. 项目管理
+### 7. 项目管理
 - **保存**：点击头部"保存"按钮，已加载项目自动使用原名称
 - **另存为**：点击"另存为"创建新项目
 - **切换项目**：使用头部项目选择器
 - **管理项目**：点击文件夹图标打开项目抽屉
 
-### 7. 主题切换
+### 8. 主题切换
 点击头部右侧的太阳/月亮图标切换亮色/暗色主题
+
+### 9. 在线凭证查询与默认浏览器打开
+1. 从首页进入“在线凭证查询”
+2. 配置 MySQL 数据源并保存
+3. 在浏览器中安装本地插件 `browser-extension/`
+4. 将浏览器扩展页面中显示的插件 ID 填入“浏览器插件”配置并保存
+5. 输入主体名并选择办理类型后执行查询
+6. 查询结果存在 `cert_info` 时，可点击“默认浏览器打开”
+
+“默认浏览器打开”会根据 `area_id + 办理类型` 从本地网站地址映射文件中查找目标地址，再从 `cert_info.cookies` 或 `cert_info.cookie` 解析 Cookie。桌面应用会打开 `http://127.0.0.1:<随机端口>/bridge?...` 本地桥接页，浏览器插件在该页面注入脚本并通过本地 WebSocket 接收 Cookie，随后调用浏览器扩展 API 先清理目标网站当前域名及父域相关 Cookie，再写入桌面应用传递的 Cookie 并跳转到目标网站。
+
+插件只支持 Chromium 系浏览器，当前按 Chrome / Edge 使用。桌面应用只保存一个插件 ID；如果默认浏览器不是安装该插件的浏览器，需要调整系统默认浏览器或重新配置插件 ID。
+
+#### 本地插件安装
+
+插件目录：
+
+```text
+browser-extension/
+```
+
+Chrome / Edge 安装步骤：
+
+1. 打开扩展管理页
+ - Chrome: `chrome://extensions/`
+ - Edge: `edge://extensions/`
+2. 打开“开发者模式”
+3. 点击“加载已解压的扩展程序”
+4. 选择仓库根目录下的 `browser-extension/`
+5. 安装后复制扩展详情中显示的插件 ID
+6. 回到桌面应用“在线凭证查询”页面，将插件 ID 保存到“浏览器插件”配置
+
+如果已经安装过旧版本插件，更新 `browser-extension/` 文件后需要在扩展管理页点击该插件的“重新加载”。否则浏览器不会加载新的 content script / background 逻辑。
+
+如需生成 zip 包，可在仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/package-browser-extension.ps1
+```
+
+输出文件：
+
+```text
+dist/coter-cookie-bridge.zip
+```
+
+Chrome / Edge 不能直接加载 zip 文件作为已解压扩展，分发给用户后仍需要先解压，再选择解压后的目录加载。
+
+#### 网站地址映射
+
+第一次加载网站地址映射时，桌面应用会在用户配置目录创建默认 JSON 文件：
+
+```text
+%APPDATA%\coter\CoterEncrypt\config\website-url-mappings.json
+```
+
+文件格式：
+
+```json
+[
+ {
+ "areaId": "289",
+ "businessType": "社保",
+ "url": "https://sbwx.rst.shanxi.gov.cn:8007/ylwxsb/index.shtml"
+ }
+]
+```
+
+如果点击“默认浏览器打开”时缺少 `area_id + 办理类型` 对应的网站地址映射，页面会提示无配置；2 秒内再次点击同一条结果可打开配置弹窗，输入首页地址并保存后即可立即使用。也可以在工具台首页点击“打开本地配置目录”，手工维护该 JSON 文件。
 
 ## 项目结构
 
 ```
-├──  # 后端项目
+├── browser-extension/ # 本地浏览器插件，用于写入 Cookie 并跳转默认浏览器
+│ ├── manifest.json
+│ ├── background.js # 写入 Cookie 并跳转当前标签页
+│ └── content-script.js # 注入本地 bridge 页面并连接桌面 WebSocket
+├── crates/
+│ └── coter-core/ # Rust 核心业务逻辑
+│ └── src/
+│ ├── crypto.rs # 加密算法实现
+│ ├── executor.rs # 工作流执行引擎
+│ ├── expression.rs # 表达式解析
+│ ├── har.rs # HAR 处理
+│ ├── removed_module.rs # 代码生成
+│ ├── project_store.rs # 项目文件管理
+│ ├── schema.rs # 项目配置结构
+│ └── validation.rs # 配置校验
+├── src-tauri/ # Tauri 桌面壳与命令绑定
+│ ├── src/
+│ │ ├── main.rs # Tauri 入口与命令注册
+│ │ ├── browser_bridge.rs # 浏览器插件联动与本地 WebSocket
+│ │ ├── executor.rs # 桌面侧执行命令适配
+│ │ ├── har.rs # 桌面侧 HAR 命令适配
+│ │ ├── crypto.rs # 桌面侧算法导出
+│ │ └── project_store.rs # 桌面侧项目存储适配
+│ ├── icons/ # 应用图标
+│ ├── Cargo.toml
+│ └── tauri.conf.json
+├──  # 旧 / 版本，仅作历史参考和对拍来源
 │ ├── src/
 │ │ └── main/
 │ │ ├── / # 源代码
@@ -286,43 +413,61 @@
 │ │ ├── router/ # 路由配置
 │ │ ├── store/ # 状态管理（Pinia）
 │ │ ├── views/ # 页面视图
-│ │ │ └── MainPage.vue # 主页面
+│ │ │ ├── HomePage.vue # 工具台首页
+│ │ │ └── MainPage.vue # 加解密工具页面
 │ │ ├── App.vue # 根组件
 │ │ └── main.js # 入口文件
 │ ├── package.json
 │ └── vite.config.js
-└── README.md
+├── Cargo.toml # Rust workspace
+├── package.json # 根级 Tauri/NPM 脚本
+├── tools/
+│ └── package-browser-extension.ps1 # 浏览器插件 zip 打包脚本
+└── readme.md
 ```
 
 ## 开发说明
 
-### 后端开发
+### Rust/Tauri 开发
 
 1. **添加新算法**
- - 在 `service` 目录下实现新算法
- - 创建对应的 REST API 接口
+ - 优先在 `crates/coter-core/src/crypto.rs` 中实现核心逻辑
+ - 在 `crates/coter-core` 中补充单元测试和必要的 旧版 golden 对拍
+ - 如需暴露给前端执行，在 `src-tauri/src/executor.rs` 中接入算法分发
+ - 前端通过 `frontend/src/api/*.js` 调用 Tauri 命令，不新增 `/api` 或 `localhost` 业务调用
 
-2. **项目导入/导出**
- - 导出全部项目（HTTP）：`GET /api/projects/transfer/export` 返回 zip
- - 导入压缩包（HTTP）：`POST /api/projects/transfer/import`，表单字段 `file`
- - 命令行脚本：
- ```bash
- # 导出到当前目录
- bash tools/export-projects.sh
- # 从 zip 导入到 projects/
- bash tools/import-projects.sh projects-20260101-120000.zip
- ```
+2. **添加新的桌面命令**
+ - 在 `src-tauri/src/main.rs` 中定义并注册 Tauri command
+ - 复杂业务逻辑优先下沉到 `crates/coter-core`
+ - Tauri 层只负责窗口、文件路径、文件对话框和命令参数适配
+
+3. **项目数据**
+ - 默认保存目录：应用配置目录下的 `projects/`（Windows 通常为 `%APPDATA%\coter\CoterEncrypt\config\projects\`）
+ - 项目文件为 JSON，文件名为 `项目名.json`
+ - 旧 项目 JSON 应保持可读取
 
 ### 前端开发
 
-1. **添加新组件类型**
+1. **添加新工具入口或页面**
+ - 在 `frontend/src/views/` 中新增页面视图
+ - 在 `frontend/src/router/index.js` 中新增路由
+ - 在 `frontend/src/views/HomePage.vue` 的工具入口列表中添加入口配置
+ - 新功能的本地能力优先通过 `src-tauri/src/` 注册 Tauri command，并将复杂业务逻辑下沉到 `crates/coter-core`
+ - 不为新功能新增业务 HTTP API、`localhost` 调用或 后端兜底
+
+2. **添加新加解密组件类型**
  - 在 `store/index.js` 的 `componentCategories` 中注册
  - 在 `ComponentConfigPanel.vue` 中添加配置表单
+ - 在 `frontend/src/api/*.js` 中通过 Tauri `invoke` 调用桌面命令
 
-2. **构建生产版本**
+3. **开发期只构建前端**
  ```bash
- cd frontend
- npm run build
+ npm --prefix frontend run build
+ ```
+
+4. **完整桌面生产构建**
+ ```bash
+ npm run tauri:build
  ```
 
 ## 许可证

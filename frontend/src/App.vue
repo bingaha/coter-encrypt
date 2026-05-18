@@ -43,8 +43,18 @@ provide('toggleTheme', toggleTheme)
 
 <style>
 .app-container {
- min-height: 100vh;
+ position: fixed;
+ inset: 0;
+ width: 100%;
+ height: 100%;
+ min-height: 0;
  display: flex;
  flex-direction: column;
+ overflow: hidden;
+}
+
+.app-container > * {
+ flex: 1 1 auto;
+ min-height: 0;
 }
 </style>

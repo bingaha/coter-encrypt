@@ -1,0 +1,16 @@
+{
+ "name": "coter-encrypt-desktop",
+ "private": true,
+ "version": "0.1.1",
+ "type": "module",
+ "scripts": {
+ "frontend:dev": "npm --prefix frontend run dev -- --host 127.0.0.1",
+ "frontend:build": "npm --prefix frontend run build",
+ "tauri": "tauri",
+ "tauri:dev": "tauri dev",
+ "tauri:build": "tauri build"
+ },
+ "devDependencies": {
+ "@tauri-apps/cli": "^2.0.0"
+ }
+}

@@ -111,6 +111,22 @@ const combinedInputOptions = computed(() => {
  return options
 })
 
+const radixBaseOptions = Array.from({ length: 35 }, (_, index) => {
+ const value = index + 2
+ const commonLabels = {
+ 2: '二进制 (2)',
+ 8: '八进制 (8)',
+ 10: '十进制 (10)',
+ 16: '十六进制 (16)',
+ 36: '三十六进制 (36)'
+ }
+
+ return {
+ label: commonLabels[value] || `${value} 进制`,
+ value
+ }
+})
+
 // 自动保存配置
 watch(localConfig, (newConfig) => {
  if (isSyncingFromProps) return
@@ -419,6 +435,88 @@ watch(localConfig, (newConfig) => {
  </n-form-item>
  </template>
  
+ <!-- Blowfish组件配置 -->
+ <template v-else-if="component.type === 'blowfish'">
+ <n-form-item label="操作类型">
+ <n-radio-group v-model:value="localConfig.operation">
+ <n-space>
+ <n-radio value="encrypt">加密</n-radio>
+ <n-radio value="decrypt">解密</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="加密模式">
+ <n-radio-group v-model:value="localConfig.mode">
+ <n-space>
+ <n-radio value="ECB">ECB</n-radio>
+ <n-radio value="CBC">CBC</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="填充模式">
+ <n-radio-group v-model:value="localConfig.padding">
+ <n-space>
+ <n-radio value="PKCS5Padding">PKCS5Padding</n-radio>
+ <n-radio value="None">None</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="密钥" 
+ :validation-status="hasFieldError('key') ? 'error' : undefined"
+ :feedback="getFieldError('key')">
+ <n-input v-model:value="localConfig.key" placeholder="请输入密钥" />
+ </n-form-item>
+ <n-form-item label="密钥格式">
+ <n-radio-group v-model:value="localConfig.keyFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item v-if="localConfig.mode === 'CBC'" label="加密向量(IV)" 
+ :validation-status="hasFieldError('iv') ? 'error' : undefined"
+ :feedback="getFieldError('iv')">
+ <n-input v-model:value="localConfig.iv" placeholder="CBC模式下为8字节" />
+ </n-form-item>
+ <n-form-item v-if="localConfig.mode === 'CBC'" label="IV格式">
+ <n-radio-group v-model:value="localConfig.ivFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输入格式">
+ <n-radio-group v-model:value="localConfig.inputFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输出格式">
+ <n-radio-group v-model:value="localConfig.outputFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="base64">BASE64</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item v-if="localConfig.outputFormat === 'hex'" label="HEX大小写">
+ <n-radio-group v-model:value="localConfig.hexCase">
+ <n-space>
+ <n-radio value="uppercase">大写</n-radio>
+ <n-radio value="lowercase">小写</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输出标识">
+ <n-input :value="component.outputRef" placeholder="设置输出参数标识符" disabled />
+ </n-form-item>
+ </template>
+ 
  <!-- Hex组件配置 -->
  <template v-else-if="component.type === 'hex'">
  <n-form-item label="操作类型">
@@ -426,6 +524,35 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="encode">编码</n-radio>
  <n-radio value="decode">解码</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输出标识">
+ <n-input :value="component.outputRef" placeholder="设置输出参数标识符" disabled />
+ </n-form-item>
+ </template>
+
+ <!-- 进制转换组件配置 -->
+ <template v-else-if="component.type === 'radix'">
+ <n-form-item label="源进制">
+ <n-select
+ v-model:value="localConfig.inputBase"
+ :options="radixBaseOptions"
+ placeholder="选择源进制"
+ />
+ </n-form-item>
+ <n-form-item label="目标进制">
+ <n-select
+ v-model:value="localConfig.outputBase"
+ :options="radixBaseOptions"
+ placeholder="选择目标进制"
+ />
+ </n-form-item>
+ <n-form-item label="字母大小写">
+ <n-radio-group v-model:value="localConfig.hexCase">
+ <n-space>
+ <n-radio value="uppercase">大写</n-radio>
+ <n-radio value="lowercase">小写</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>

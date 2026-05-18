@@ -34,7 +34,8 @@ import {
  FingerPrintOutline,
  CodeOutline,
  LinkOutline,
- TextOutline
+ TextOutline,
+ CalculatorOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store/index.js'
 // 导入参数引用选择器组件
@@ -108,7 +109,8 @@ const iconMap = {
  FingerPrintOutline,
  CodeOutline,
  LinkOutline,
- TextOutline
+ TextOutline,
+ CalculatorOutline
 }
 
 // 获取图标组件
@@ -148,6 +150,22 @@ const getFieldErrors = (fieldName) => {
 // 表达式校验错误列表
 const expressionErrors = computed(() => {
  return getFieldErrors('inputExpression')
+})
+
+const radixBaseOptions = Array.from({ length: 35 }, (_, index) => {
+ const value = index + 2
+ const commonLabels = {
+ 2: '二进制 (2)',
+ 8: '八进制 (8)',
+ 10: '十进制 (10)',
+ 16: '十六进制 (16)',
+ 36: '三十六进制 (36)'
+ }
+
+ return {
+ label: commonLabels[value] || `${value} 进制`,
+ value
+ }
 })
 
 // 输入源选项
@@ -459,6 +477,32 @@ const insertVariable = (outputRef) => {
  </n-form-item>
  </template>
 
+ <!-- 进制转换配置 -->
+ <template v-else-if="component.type === 'radix'">
+ <n-form-item label="源进制">
+ <n-select
+ v-model:value="localConfig.inputBase"
+ :options="radixBaseOptions"
+ placeholder="选择源进制"
+ />
+ </n-form-item>
+ <n-form-item label="目标进制">
+ <n-select
+ v-model:value="localConfig.outputBase"
+ :options="radixBaseOptions"
+ placeholder="选择目标进制"
+ />
+ </n-form-item>
+ <n-form-item label="字母大小写">
+ <n-radio-group v-model:value="localConfig.hexCase">
+ <n-space>
+ <n-radio value="uppercase">大写</n-radio>
+ <n-radio value="lowercase">小写</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ </template>
+
  <!-- MD5 配置 -->
  <template v-else-if="component.type === 'md5'">
  <n-form-item label="结果格式">
@@ -642,6 +686,98 @@ const insertVariable = (outputRef) => {
  />
  </n-form-item>
  <n-form-item v-if="localConfig.mode !== 'ECB'" label="IV格式">
+ <n-radio-group v-model:value="localConfig.ivFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输入格式">
+ <n-radio-group v-model:value="localConfig.inputFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="输出格式">
+ <n-radio-group v-model:value="localConfig.outputFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="base64">BASE64</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item v-if="localConfig.outputFormat === 'hex'" label="HEX大小写">
+ <n-radio-group v-model:value="localConfig.hexCase">
+ <n-space>
+ <n-radio value="uppercase">大写</n-radio>
+ <n-radio value="lowercase">小写</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ </template>
+
+ <!-- Blowfish 配置 -->
+ <template v-else-if="component.type === 'blowfish'">
+ <n-form-item label="操作类型">
+ <n-radio-group v-model:value="localConfig.operation">
+ <n-space>
+ <n-radio value="encrypt">加密</n-radio>
+ <n-radio value="decrypt">解密</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="加密模式">
+ <n-radio-group v-model:value="localConfig.mode">
+ <n-space>
+ <n-radio value="ECB">ECB</n-radio>
+ <n-radio value="CBC">CBC</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item label="填充模式">
+ <n-radio-group v-model:value="localConfig.padding">
+ <n-space>
+ <n-radio value="PKCS5Padding">PKCS5Padding</n-radio>
+ <n-radio value="None">None</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item
+ label="密钥来源"
+ :validation-status="hasFieldError('keyRef') ? 'error' : undefined"
+ :feedback="getFieldError('keyRef')"
+ >
+ <ParamRefSelector
+ v-model="localConfig.keyRef"
+ :component-id="component.id"
+ placeholder="选择密钥来源"
+ />
+ </n-form-item>
+ <n-form-item label="密钥格式">
+ <n-radio-group v-model:value="localConfig.keyFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="text">TEXT</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item
+ v-if="localConfig.mode === 'CBC'"
+ label="IV向量来源"
+ :validation-status="hasFieldError('ivRef') ? 'error' : undefined"
+ :feedback="getFieldError('ivRef')"
+ >
+ <ParamRefSelector
+ v-model="localConfig.ivRef"
+ :component-id="component.id"
+ placeholder="选择IV向量来源"
+ />
+ </n-form-item>
+ <n-form-item v-if="localConfig.mode === 'CBC'" label="IV格式">
  <n-radio-group v-model:value="localConfig.ivFormat">
  <n-space>
  <n-radio value="hex">HEX</n-radio>
