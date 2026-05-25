@@ -16,6 +16,10 @@ export const queryCertInfo = (request) => {
  return invokeApi('query_cert_info', { request })
 }
 
+export const queryRobotTaskFeedbackData = (request) => {
+ return invokeApi('query_robot_task_feedback_data', { request })
+}
+
 export const loadBrowserBridgeConfig = () => {
  return invokeApi('load_browser_bridge_config')
 }

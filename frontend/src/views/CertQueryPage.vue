@@ -5,7 +5,6 @@ import {
  NEmpty,
  NIcon,
  NInput,
- NInputNumber,
  NModal,
  NSelect,
  NTag,
@@ -22,41 +21,31 @@ import {
  OpenOutline,
  SaveOutline,
  SearchOutline,
- ServerOutline,
  SunnyOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import {
  loadBrowserBridgeConfig,
- loadMysqlDatasourceConfig,
  loadWebsiteUrlMappings,
  openDefaultBrowserWithCookies,
  queryCertInfo,
  saveBrowserBridgeConfig,
- saveMysqlDatasourceConfig,
- saveWebsiteUrlMapping,
- testMysqlDatasource
+ saveWebsiteUrlMapping
 } from '@/api/certQuery'
+import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
 
 const configStore = useConfigStore()
 const message = useMessage()
 
 const isDarkMode = inject('isDarkMode', computed(() => configStore.isDarkMode))
 const toggleTheme = inject('toggleTheme', () => configStore.toggleTheme())
-
-const datasourceForm = ref({
- host: '',
- port: 3306,
- database: '',
- username: '',
- password: '',
- connectTimeoutSeconds: 8
-})
-const hasSavedDatasource = ref(false)
-const hasSavedPassword = ref(false)
-const loadingConfig = ref(false)
-const savingDatasource = ref(false)
-const testingDatasource = ref(false)
+const {
+ statusLabel,
+ statusTagType,
+ ensureReady,
+ openModal,
+ loadConfig
+} = useMysqlDatasourceConfig()
 const bridgeForm = ref({
  extensionId: ''
 })
@@ -112,22 +101,8 @@ const businessTypeOptions = [
  value
 }))
 
-const canSaveDatasource = computed(() => {
- const form = datasourceForm.value
-
- return Boolean(
- form.host.trim() &&
- form.port &&
- form.database.trim() &&
- form.username.trim() &&
- (form.password || hasSavedPassword.value) &&
- form.connectTimeoutSeconds > 0
- )
-})
-
 const canQuery = computed(() => {
  return Boolean(
- hasSavedDatasource.value &&
  queryForm.value.mainName.trim() &&
  queryForm.value.businessType.trim()
  )
@@ -161,33 +136,6 @@ const canSaveMapping = computed(() => {
  )
 })
 
-const loadDatasource = async () => {
- loadingConfig.value = true
- try {
- const response = await loadMysqlDatasourceConfig()
- const config = response.data
-
- if (!config) {
- return
- }
-
- datasourceForm.value = {
- host: config.host || '',
- port: config.port || 3306,
- database: config.database || '',
- username: config.username || '',
- password: '',
- connectTimeoutSeconds: config.connectTimeoutSeconds || 8
- }
- hasSavedDatasource.value = true
- hasSavedPassword.value = Boolean(config.hasPassword)
- } catch (error) {
- message.error(error?.message || '读取数据源配置失败')
- } finally {
- loadingConfig.value = false
- }
-}
-
 const loadBridgeConfig = async () => {
  try {
  const response = await loadBrowserBridgeConfig()
@@ -207,58 +155,6 @@ const loadMappings = async () => {
  message.error(error?.message || '读取网站地址映射失败')
  } finally {
  loadingMappings.value = false
- }
-}
-
-const toDatasourcePayload = () => {
- const form = datasourceForm.value
-
- return {
- host: form.host.trim(),
- port: Number(form.port),
- database: form.database.trim(),
- username: form.username.trim(),
- password: form.password ? form.password : null,
- connectTimeoutSeconds: Number(form.connectTimeoutSeconds)
- }
-}
-
-const handleSaveDatasource = async () => {
- if (!canSaveDatasource.value) {
- message.warning('请补全数据源配置')
- return
- }
-
- savingDatasource.value = true
- try {
- const response = await saveMysqlDatasourceConfig(toDatasourcePayload())
- const saved = response.data
-
- hasSavedDatasource.value = true
- hasSavedPassword.value = Boolean(saved?.hasPassword)
- datasourceForm.value.password = ''
- message.success('数据源配置已保存')
- } catch (error) {
- message.error(error?.message || '保存数据源配置失败')
- } finally {
- savingDatasource.value = false
- }
-}
-
-const handleTestDatasource = async () => {
- if (!hasSavedDatasource.value) {
- message.warning('请先保存数据源配置')
- return
- }
-
- testingDatasource.value = true
- try {
- await testMysqlDatasource(null)
- message.success('MySQL 连接正常')
- } catch (error) {
- message.error(error?.message || '测试 MySQL 连接失败')
- } finally {
- testingDatasource.value = false
  }
 }
 
@@ -286,6 +182,12 @@ const handleSaveBridgeConfig = async () => {
 const handleQuery = async () => {
  if (!canQuery.value) {
  message.warning('请填写查询条件')
+ return
+ }
+
+ const ready = await ensureReady()
+ if (!ready) {
+ message.warning('请先配置可用的 MySQL 数据源')
  return
  }
 
@@ -457,7 +359,7 @@ const handleToggleTheme = () => {
 }
 
 onMounted(() => {
- loadDatasource()
+ loadConfig()
  loadBridgeConfig()
  loadMappings()
 })
@@ -553,99 +455,24 @@ onBeforeUnmount(() => {
  <section class="panel">
  <div class="panel-heading panel-heading-row">
  <div>
- <h2>数据源</h2>
- <n-text depth="3">
- {{ hasSavedDatasource ? '已保存' : '未保存' }}
- <template v-if="hasSavedPassword"> · 密码已保存</template>
- </n-text>
+ <h2>数据库连接</h2>
+ <n-text depth="3">与首页“数据库配置”共用同一份 MySQL 数据源</n-text>
  </div>
- <n-tag :type="hasSavedDatasource ? 'success' : 'warning'" size="small">
- {{ hasSavedDatasource ? '可查询' : '待配置' }}
+ <n-tag :type="statusTagType" size="small">
+ {{ statusLabel }}
  </n-tag>
- </div>
-
- <div class="datasource-grid" :class="{ 'is-loading': loadingConfig }">
- <label class="field-block">
- <span>地址</span>
- <n-input
- v-model:value="datasourceForm.host"
- placeholder="127.0.0.1"
- clearable
- />
- </label>
-
- <label class="field-block">
- <span>端口</span>
- <n-input-number
- v-model:value="datasourceForm.port"
- :min="1"
- :max="65535"
- placeholder="3306"
- />
- </label>
-
- <label class="field-block">
- <span>数据库</span>
- <n-input
- v-model:value="datasourceForm.database"
- placeholder="database"
- clearable
- />
- </label>
-
- <label class="field-block">
- <span>账号</span>
- <n-input
- v-model:value="datasourceForm.username"
- placeholder="username"
- clearable
- />
- </label>
-
- <label class="field-block password-field">
- <span>密码</span>
- <n-input
- v-model:value="datasourceForm.password"
- type="password"
- show-password-on="click"
- :placeholder="hasSavedPassword ? '留空沿用已保存密码' : 'password'"
- clearable
- />
- </label>
-
- <label class="field-block">
- <span>超时秒数</span>
- <n-input-number
- v-model:value="datasourceForm.connectTimeoutSeconds"
- :min="1"
- :max="60"
- placeholder="8"
- />
- </label>
  </div>
 
  <div class="panel-actions">
  <n-button
- secondary
- :disabled="!hasSavedDatasource"
- :loading="testingDatasource"
- @click="handleTestDatasource"
- >
- <template #icon>
- <n-icon><ServerOutline /></n-icon>
- </template>
- 测试连接
- </n-button>
- <n-button
  type="primary"
- :disabled="!canSaveDatasource"
- :loading="savingDatasource"
- @click="handleSaveDatasource"
+ secondary
+ @click="openModal"
  >
  <template #icon>
  <n-icon><SaveOutline /></n-icon>
  </template>
- 保存配置
+ 打开数据库配置
  </n-button>
  </div>
  </section>

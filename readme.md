@@ -30,7 +30,7 @@
 
 1. **工具台首页与路由**
  - 默认路由 `/` 为工具台首页
- - 当前提供“加解密工具”入口，跳转到 `/encrypt`
+ - 当前提供“加解密工具”“日志语句生成”“在线凭证查询”“任务反馈生成”等工具入口
  - `/encrypt` 二级页面提供返回首页入口
  - 首页使用可扩展工具入口网格，后续可继续加入 OCR、浏览器跳转、固定表查询等独立功能
  - 页面切换在同一个 Tauri 窗口内完成，不打开额外窗口
@@ -137,7 +137,7 @@
  - Windows 11 通常已内置。
  - 较旧的 Windows 10 环境如无法启动 Tauri 窗口，需要安装 Microsoft Edge WebView2 Runtime。
 
-当前版本使用文件存储，无需安装数据库与配置数据源。
+当前核心加解密功能使用文件存储，无需数据库。在线凭证查询、任务反馈生成等查库工具需要在首页“数据库配置”中配置 MySQL 数据源。
 
 ### 安装依赖
 
@@ -179,13 +179,13 @@ npm run tauri:build
 
 ```text
 target/release/CoterEncrypt.exe
-target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe
+target/release/bundle/nsis/CoterEncrypt_0.1.4_x64-setup.exe
 ```
 
 其中：
 
 - `target/release/CoterEncrypt.exe` 可用于开发内测或便携运行。
-- `target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe` 是 NSIS 安装包，适合分发给普通用户。
+- `target/release/bundle/nsis/CoterEncrypt_0.1.4_x64-setup.exe` 是 NSIS 安装包，适合分发给普通用户。
 
 运行这些产物不需要启动 后端，不需要打开浏览器，也不需要访问 `localhost`。
 
@@ -281,7 +281,7 @@ target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe
 
 ### 9. 在线凭证查询与默认浏览器打开
 1. 从首页进入“在线凭证查询”
-2. 配置 MySQL 数据源并保存
+2. 如首页数据库状态不是“连接成功”，点击首页“数据库配置”保存并测试 MySQL 数据源；也可以在查询时根据弹窗提示配置
 3. 在浏览器中安装本地插件 `browser-extension/`
 4. 将浏览器扩展页面中显示的插件 ID 填入“浏览器插件”配置并保存
 5. 输入主体名并选择办理类型后执行查询
@@ -290,6 +290,16 @@ target/release/bundle/nsis/CoterEncrypt_0.1.1_x64-setup.exe
 “默认浏览器打开”会根据 `area_id + 办理类型` 从本地网站地址映射文件中查找目标地址，再从 `cert_info.cookies` 或 `cert_info.cookie` 解析 Cookie。桌面应用会打开 `http://127.0.0.1:<随机端口>/bridge?...` 本地桥接页，浏览器插件在该页面注入脚本并通过本地 WebSocket 接收 Cookie，随后调用浏览器扩展 API 先清理目标网站当前域名及父域相关 Cookie，再写入桌面应用传递的 Cookie 并跳转到目标网站。
 
 插件只支持 Chromium 系浏览器，当前按 Chrome / Edge 使用。桌面应用只保存一个插件 ID；如果默认浏览器不是安装该插件的浏览器，需要调整系统默认浏览器或重新配置插件 ID。
+
+### 10. 任务反馈生成
+1. 从首页进入“任务反馈生成”
+2. 确认首页“数据库配置”中的 MySQL 数据源已连接成功；如果未配置或连接失败，点击查询时也会弹出配置窗口
+3. 输入 `task_id`，按需要确认库名，点击“按 task_id 查询数据库”
+4. 页面会查询 `robot_task_user` 和 `robot_task_user_ins`，自动填入两张表对应记录的主键
+5. 选择反馈结果、反馈消息和是否排除已反馈订单
+6. 复制生成的查询 SQL、更新 SQL 或 `handFeedBack` curl
+
+其中 `handFeedBack` curl 的 `userIdSet` 使用 `robot_task_user.id`，`robot_task_user_ins.id` 只用于生成直接更新险种订单表的 SQL。
 
 #### 本地插件安装
 

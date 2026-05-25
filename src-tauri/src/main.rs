@@ -109,6 +109,13 @@ async fn query_cert_info(
 }
 
 #[tauri::command]
+async fn query_robot_task_feedback_data(
+ request: cert_query::RobotTaskFeedbackQueryRequest,
+) -> Result<cert_query::RobotTaskFeedbackQueryResponse, String> {
+ cert_query::query_robot_task_feedback_data(request).await
+}
+
+#[tauri::command]
 fn load_browser_bridge_config() -> Result<browser_bridge::BrowserBridgeConfig, String> {
  browser_bridge::load_browser_bridge_config()
 }
@@ -220,6 +227,7 @@ fn main() {
  save_mysql_datasource_config,
  test_mysql_datasource,
  query_cert_info,
+ query_robot_task_feedback_data,
  load_browser_bridge_config,
  save_browser_bridge_config,
  load_website_url_mappings,

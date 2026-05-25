@@ -1,9 +1,10 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed, inject, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
  NButton,
  NIcon,
+ NTag,
  NText,
  NTooltip,
  useMessage
@@ -15,11 +16,13 @@ import {
  SunnyOutline,
  ChevronForwardOutline,
  FolderOpenOutline,
+ ReceiptOutline,
  SearchOutline,
  ServerOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
+import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -27,6 +30,14 @@ const message = useMessage()
 
 const isDarkMode = inject('isDarkMode', computed(() => configStore.isDarkMode))
 const toggleTheme = inject('toggleTheme', () => configStore.toggleTheme())
+const {
+ testingDatasource,
+ statusLabel,
+ statusTagType,
+ openModal,
+ loadConfig,
+ checkConnection
+} = useMysqlDatasourceConfig()
 
 const toolEntries = [
  {
@@ -55,6 +66,15 @@ const toolEntries = [
  status: '可用',
  description: '按主体名和办理类型查询 MySQL，定位最新有效 cert_info。',
  capabilities: ['MySQL 数据源', '两段查询', '本地配置保存']
+ },
+ {
+ id: 'robot-feedback',
+ title: '任务反馈生成',
+ routeName: 'RobotFeedbackTool',
+ icon: ReceiptOutline,
+ status: '可用',
+ description: '按 task_id 和记录主键生成手动反馈 SQL 与 curl。',
+ capabilities: ['更新 SQL', '反馈 curl', '一键复制']
  }
 ]
 
@@ -73,6 +93,13 @@ const handleOpenConfigDir = async () => {
  message.error(error?.message || '打开本地配置目录失败')
  }
 }
+
+onMounted(async () => {
+ const loaded = await loadConfig()
+ if (loaded) {
+ checkConnection()
+ }
+})
 </script>
 
 <template>
@@ -89,6 +116,26 @@ const handleOpenConfigDir = async () => {
  </div>
 
  <div class="home-actions">
+ <n-tooltip trigger="hover">
+ <template #trigger>
+ <n-button secondary size="small" :loading="testingDatasource" @click="openModal">
+ <template #icon>
+ <n-icon><ServerOutline /></n-icon>
+ </template>
+ 数据库配置
+ <n-tag
+ class="db-status-tag"
+ :type="statusTagType"
+ size="small"
+ :bordered="false"
+ >
+ {{ statusLabel }}
+ </n-tag>
+ </n-button>
+ </template>
+ 配置并测试 MySQL 数据源
+ </n-tooltip>
+
  <n-tooltip trigger="hover">
  <template #trigger>
  <n-button secondary size="small" @click="handleOpenConfigDir">
@@ -217,6 +264,10 @@ const handleOpenConfigDir = async () => {
  display: flex;
  align-items: center;
  gap: 8px;
+}
+
+.db-status-tag {
+ margin-left: 4px;
 }
 
 .home-content {

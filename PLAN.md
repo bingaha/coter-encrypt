@@ -210,3 +210,56 @@ chrome-extension://<插件ID>/bridge.html?port=...&token=...
 - `cargo test -p coter-encrypt-desktop execute_batch_runs_radix_algorithm -- --nocapture`：通过，桌面执行链路 RADIX 测试通过。
 - `npm --prefix frontend run build`：通过。
 - `cargo check -p coter-encrypt-desktop`：通过。
+
+## 机器人任务手动反馈生成器
+
+### 开发任务
+
+1. [已完成] 新增工具台页面，用于根据 `task_id`、任务人员记录 ID 和险种订单 ID 生成查询 SQL、更新 SQL 与手动反馈 curl。
+2. [已完成] 接入 Tauri/Rust 本地 MySQL 查询，根据 `task_id` 自动查询 `robot_task_user` 与 `robot_task_user_ins` 后生成更新 SQL 和 curl。
+3. [已完成] 将 MySQL 数据源配置抽成首页共享弹窗，首页展示连接状态，在线凭证查询和任务反馈生成在查询前共用连接检测与配置入口。
+
+### 验证记录
+
+- `npm --prefix frontend run build`：通过。
+- 接入查库后再次运行 `npm --prefix frontend run build`：通过。
+- `cargo check -p coter-encrypt-desktop`：通过。
+- `cargo test -p coter-encrypt-desktop robot_task_query_helpers_validate_input -- --nocapture`：通过。
+- 共享数据库配置弹窗调整后再次运行 `npm --prefix frontend run build`：通过。
+- 共享数据库配置弹窗调整后再次运行 `cargo check -p coter-encrypt-desktop`：通过。
+- README 同步后再次运行 `npm --prefix frontend run build`：通过。
+- README 同步后再次运行 `cargo check -p coter-encrypt-desktop`：通过。
+
+## 在线凭证查询账号有效性约束
+
+### 开发任务
+
+1. [已完成] 修复在线凭证查询账号 SQL，增加 `robot_website_account.valid = 1`、`robot_account.status = 1`、`robot_website.valid = 1` 过滤。
+
+### 验证记录
+
+- `cargo check -p coter-encrypt-desktop`：通过。
+
+## 项目版本号调整至 0.1.3
+
+### 开发任务
+
+1. [已完成] 将桌面应用、前端包、Rust workspace crate、Tauri 配置、浏览器插件和 README 当前产物路径版本号统一调整为 `0.1.3`。
+
+### 验证记录
+
+- `powershell -ExecutionPolicy Bypass -File tools\package-browser-extension.ps1`：通过，重新生成 `dist/coter-cookie-bridge.zip`。
+- `npm --prefix frontend run build`：通过。
+- `cargo check -p coter-encrypt-desktop`：通过。
+
+## 项目版本号调整至 0.1.4
+
+### 开发任务
+
+1. [已完成] 将桌面应用、前端包、Rust workspace crate、Tauri 配置、浏览器插件和 README 当前产物路径版本号统一调整为 `0.1.4`。
+
+### 验证记录
+
+- `npm --prefix frontend run build`：通过。
+- `cargo check -p coter-encrypt-desktop`：通过。
+- `powershell -ExecutionPolicy Bypass -File tools\package-browser-extension.ps1`：通过，重新生成 `dist/coter-cookie-bridge.zip`。

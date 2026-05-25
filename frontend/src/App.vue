@@ -9,6 +9,7 @@ import {
  dateZhCN,
  darkTheme
 } from 'naive-ui'
+import MysqlDatasourceModal from '@/components/MysqlDatasourceModal.vue'
 
 // 主题状态管理，从 localStorage 读取初始值
 const isDarkMode = ref(localStorage.getItem('theme') === 'dark')
@@ -34,6 +35,7 @@ provide('toggleTheme', toggleTheme)
  <n-notification-provider>
  <div class="app-container">
  <router-view />
+ <mysql-datasource-modal />
  </div>
  </n-notification-provider>
  </n-dialog-provider>

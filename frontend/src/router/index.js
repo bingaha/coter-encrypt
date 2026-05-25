@@ -3,6 +3,7 @@ import HomePage from '../views/HomePage.vue'
 import MainPage from '../views/MainPage.vue'
 import LogExpressionPage from '../views/LogExpressionPage.vue'
 import CertQueryPage from '../views/CertQueryPage.vue'
+import RobotFeedbackPage from '../views/RobotFeedbackPage.vue'
 
 const routes = [
  {
@@ -24,6 +25,11 @@ const routes = [
  path: '/cert-query',
  name: 'CertQueryTool',
  component: CertQueryPage
+ },
+ {
+ path: '/robot-feedback',
+ name: 'RobotFeedbackTool',
+ component: RobotFeedbackPage
  }
 ]
 

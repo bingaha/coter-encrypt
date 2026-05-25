@@ -101,6 +101,39 @@ pub struct CertQueryResponse {
  pub items: Vec<CertQueryItem>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RobotTaskFeedbackQueryRequest {
+ pub task_id: String,
+ #[serde(default)]
+ pub schema_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RobotTaskUserFeedbackRow {
+ pub id: String,
+ pub status: Option<String>,
+ pub msg: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RobotTaskUserInsFeedbackRow {
+ pub id: String,
+ pub task_user_id: Option<String>,
+ pub status: Option<String>,
+ pub msg: Option<String>,
+ pub feedback_ed: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RobotTaskFeedbackQueryResponse {
+ pub task_users: Vec<RobotTaskUserFeedbackRow>,
+ pub task_user_ins: Vec<RobotTaskUserInsFeedbackRow>,
+}
+
 pub async fn load_mysql_datasource_config() -> Result<Option<MysqlDatasourceConfigView>, String> {
  let Some(stored) = read_stored_config()? else {
  return Ok(None);
@@ -179,6 +212,24 @@ pub async fn query_cert_info(request: CertQueryRequest) -> Result<CertQueryRespo
  Ok(CertQueryResponse { items })
 }
 
+pub async fn query_robot_task_feedback_data(
+ request: RobotTaskFeedbackQueryRequest,
+) -> Result<RobotTaskFeedbackQueryResponse, String> {
+ let task_id = parse_task_id(&request.task_id)?;
+ let schema_name = normalize_schema_name(request.schema_name.as_deref())?;
+ let stored = resolve_config(None)?;
+ let pool = connect_pool(&stored).await?;
+
+ let task_users = query_robot_task_users(&pool, task_id, schema_name.as_deref()).await?;
+ let task_user_ins = query_robot_task_user_ins(&pool, task_id, schema_name.as_deref()).await?;
+
+ pool.close().await;
+ Ok(RobotTaskFeedbackQueryResponse {
+ task_users,
+ task_user_ins,
+ })
+}
+
 async fn query_accounts(
  pool: &MySqlPool,
  main_name: &str,
@@ -193,10 +244,13 @@ async fn query_accounts(
  rwa.dwbh,
  CAST(ra.area_id AS CHAR) AS area_id
  FROM robot_website_account rwa
- LEFT JOIN robot_account ra ON rwa.account_id = ra.id
- LEFT JOIN robot_website rw ON rwa.website_id = rw.id
+ JOIN robot_account ra ON rwa.account_id = ra.id
+ JOIN robot_website rw ON rwa.website_id = rw.id
  WHERE ra.main_name = ?
  AND rw.blxm = ?
+ AND rwa.valid = 1
+ AND ra.status = 1
+ AND rw.valid = 1
  "#,
  )
  .bind(main_name)
@@ -259,6 +313,94 @@ async fn query_latest_cert(
  .transpose()
 }
 
+async fn query_robot_task_users(
+ pool: &MySqlPool,
+ task_id: i64,
+ schema_name: Option<&str>,
+) -> Result<Vec<RobotTaskUserFeedbackRow>, String> {
+ let table = qualify_table_name(schema_name, "robot_task_user");
+ let sql = format!(
+ r#"
+ SELECT CAST(id AS CHAR) AS id,
+ CAST(status AS CHAR) AS status,
+ msg
+ FROM {table}
+ WHERE task_id = ?
+ ORDER BY id
+ "#
+ );
+
+ let rows = sqlx::query(&sql)
+ .bind(task_id)
+ .fetch_all(pool)
+ .await
+ .map_err(|error| format!("查询 robot_task_user 失败: {error}"))?;
+
+ rows.into_iter()
+ .map(|row| {
+ let id: Option<String> = row
+ .try_get("id")
+ .map_err(|error| format!("读取 robot_task_user.id 失败: {error}"))?;
+ let id = id
+ .map(|value| value.trim().to_string())
+ .filter(|value| !value.is_empty())
+ .ok_or_else(|| "robot_task_user 记录缺少 id".to_string())?;
+
+ Ok(RobotTaskUserFeedbackRow {
+ id,
+ status: row.try_get("status").unwrap_or(None),
+ msg: row.try_get("msg").unwrap_or(None),
+ })
+ })
+ .collect()
+}
+
+async fn query_robot_task_user_ins(
+ pool: &MySqlPool,
+ task_id: i64,
+ schema_name: Option<&str>,
+) -> Result<Vec<RobotTaskUserInsFeedbackRow>, String> {
+ let table = qualify_table_name(schema_name, "robot_task_user_ins");
+ let sql = format!(
+ r#"
+ SELECT CAST(id AS CHAR) AS id,
+ CAST(task_user_id AS CHAR) AS task_user_id,
+ CAST(status AS CHAR) AS status,
+ msg,
+ CAST(feedback_ed AS CHAR) AS feedback_ed
+ FROM {table}
+ WHERE task_id = ?
+ ORDER BY id
+ "#
+ );
+
+ let rows = sqlx::query(&sql)
+ .bind(task_id)
+ .fetch_all(pool)
+ .await
+ .map_err(|error| format!("查询 robot_task_user_ins 失败: {error}"))?;
+
+ rows.into_iter()
+ .map(|row| {
+ let id: Option<String> = row
+ .try_get("id")
+ .map_err(|error| format!("读取 robot_task_user_ins.id 失败: {error}"))?;
+ let id = id
+ .map(|value| value.trim().to_string())
+ .filter(|value| !value.is_empty())
+ .ok_or_else(|| "robot_task_user_ins 记录缺少 id".to_string())?;
+
+ Ok(RobotTaskUserInsFeedbackRow {
+ id,
+ task_user_id: row.try_get("task_user_id").unwrap_or(None),
+ status: row.try_get("status").unwrap_or(None),
+ msg: row.try_get("msg").unwrap_or(None),
+ feedback_ed: row.try_get("feedback_ed").unwrap_or(None),
+ })
+ })
+ .collect()
+}
+
 async fn connect_pool(config: &ResolvedMysqlDatasourceConfig) -> Result<MySqlPool, String> {
  let url = format!(
  "mysql://{}:{}@{}:{}/{}",
@@ -275,6 +417,61 @@ async fn connect_pool(config: &ResolvedMysqlDatasourceConfig) -> Result<MySqlPoo
  .connect(&url)
  .await
  .map_err(|error| format!("连接 MySQL 失败: {error}"))
+}
+
+fn parse_task_id(input: &str) -> Result<i64, String> {
+ let trimmed = input.trim();
+
+ if trimmed.is_empty() {
+ return Err("task_id 不能为空".to_string());
+ }
+
+ if !trimmed.chars().all(|char| char.is_ascii_digit()) {
+ return Err("task_id 只能包含数字".to_string());
+ }
+
+ let normalized = trimmed.trim_start_matches('0');
+ let normalized = if normalized.is_empty() {
+ "0"
+ } else {
+ normalized
+ };
+ let task_id = normalized
+ .parse::<i64>()
+ .map_err(|_| "task_id 超出支持范围".to_string())?;
+
+ if task_id <= 0 {
+ return Err("task_id 必须大于 0".to_string());
+ }
+
+ Ok(task_id)
+}
+
+fn normalize_schema_name(input: Option<&str>) -> Result<Option<String>, String> {
+ let Some(input) = input else {
+ return Ok(None);
+ };
+
+ let trimmed = input.trim();
+ if trimmed.is_empty() {
+ return Ok(None);
+ }
+
+ if !trimmed
+ .chars()
+ .all(|char| char.is_ascii_alphanumeric() || char == '_')
+ {
+ return Err("库名只能包含字母、数字和下划线".to_string());
+ }
+
+ Ok(Some(trimmed.to_string()))
+}
+
+fn qualify_table_name(schema_name: Option<&str>, table_name: &str) -> String {
+ match schema_name {
+ Some(schema_name) => format!("`{schema_name}`.`{table_name}`"),
+ None => format!("`{table_name}`"),
+ }
 }
 
 fn resolve_config(
@@ -529,7 +726,10 @@ fn config_file_exists_in(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
- use super::{hex_decode, hex_encode, percent_encode, MysqlDatasourceConfig};
+ use super::{
+ hex_decode, hex_encode, normalize_schema_name, parse_task_id, percent_encode,
+ qualify_table_name, MysqlDatasourceConfig,
+ };
 
  #[test]
  fn percent_encode_encodes_url_reserved_characters() {
@@ -559,5 +759,21 @@ mod tests {
  let encoded = hex_encode(&bytes);
  assert_eq!(encoded, "00010f107fff");
  assert_eq!(hex_decode(&encoded).unwrap(), bytes);
+ }
+
+ #[test]
+ fn robot_task_query_helpers_validate_input() {
+ assert_eq!(parse_task_id("0209425").unwrap(), 209425);
+ assert!(parse_task_id("abc").is_err());
+ assert!(parse_task_id("0").is_err());
+ assert_eq!(
+ normalize_schema_name(Some("platform_crawler")).unwrap(),
+ Some("platform_crawler".to_string())
+ );
+ assert!(normalize_schema_name(Some("platform-crawler")).is_err());
+ assert_eq!(
+ qualify_table_name(Some("platform_crawler"), "robot_task_user"),
+ "`platform_crawler`.`robot_task_user`"
+ );
  }
 }
