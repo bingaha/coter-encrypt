@@ -461,7 +461,7 @@ const cityGroups = [
 const businessTypeOptions = [
  { label: '社保凭证下载', value: 1 },
  { label: '无日期社保凭证下载', value: 2 },
- { label: '参保用户新增（社保增员）', value: 3 },
+ { label: '参保用户新增（社保增员） —— 医保增员、社保增员', value: 3 },
  { label: '参保用户新增凭证下载', value: 4 },
  { label: '参保用户停缴（社保减员）', value: 5 },
  { label: '参保用户补缴', value: 6 },
@@ -478,7 +478,7 @@ const businessTypeOptions = [
  { label: '社保同步员工花名册信息', value: 17 },
  { label: '公积金同步员工花名册信息', value: 18 },
  { label: '社保同步账单信息', value: 19 },
- { label: '公积金同步账单信息', value: 20 },
+ { label: '公积金同步账单信息 —— 公积金台账下载', value: 20 },
  { label: '社保招工', value: 21 },
  { label: '社保退工', value: 22 },
  { label: '社保材料下载', value: 23 },
@@ -503,7 +503,9 @@ const businessTypeOptions = [
  { label: '封存转出', value: 42 },
  { label: '完税证明下载', value: 43 },
  { label: '截图下载', value: 44 },
- { label: '集中封存', value: 45 }
+ { label: '集中封存', value: 45 },
+ { label: '登录', value: 'login' },
+ { label: '获取短信验证码', value: 'sendSmsCode' }
 ]
 
 const auditTagOptions = [
@@ -569,6 +571,22 @@ const selectedAuditTagOption = computed(() => {
 const taskRoute = computed(() => {
  const taskType = selectedBusinessType.value
 
+ if (taskType === 'login') {
+ return {
+ label: '登录',
+ prefix: 'success invoke login method, request param is',
+ taskField: 'none'
+ }
+ }
+
+ if (taskType === 'sendSmsCode') {
+ return {
+ label: '获取短信验证码',
+ prefix: 'success invoke sendSmsCode method, request param is',
+ taskField: 'none'
+ }
+ }
+
  if ([1, 2, 16].includes(taskType)) {
  return {
  label: '凭证下载',
@@ -607,11 +625,12 @@ const expressionParts = computed(() => {
 
  if (selectedBusinessType.value !== null) {
  parts.push(`log:'${taskRoute.value.prefix}'`)
- parts.push(
- taskRoute.value.taskField === 'taskType'
- ? `log:'taskType":${selectedBusinessType.value}'`
- : `log:'"type":${selectedBusinessType.value}'`
- )
+
+ if (taskRoute.value.taskField === 'taskType') {
+ parts.push(`log:'taskType":${selectedBusinessType.value}'`)
+ } else if (taskRoute.value.taskField === 'type') {
+ parts.push(`log:'"type":${selectedBusinessType.value}'`)
+ }
  }
 
  if (selectedCity.value) {
@@ -824,7 +843,7 @@ onBeforeUnmount(() => {
  </div>
  <div>
  <n-text depth="3">taskType</n-text>
- <strong>{{ selectedBusinessTypeOption?.value ?? '未选择' }}</strong>
+ <strong>{{ taskRoute.taskField === 'none' ? '不涉及' : (selectedBusinessTypeOption?.value ?? '未选择') }}</strong>
  </div>
  <div>
  <n-text depth="3">auditTag</n-text>
