@@ -4,6 +4,7 @@ import MainPage from '../views/MainPage.vue'
 import LogExpressionPage from '../views/LogExpressionPage.vue'
 import CertQueryPage from '../views/CertQueryPage.vue'
 import RobotFeedbackPage from '../views/RobotFeedbackPage.vue'
+import OssTransferPage from '../views/OssTransferPage.vue'
 
 const routes = [
  {
@@ -30,6 +31,11 @@ const routes = [
  path: '/robot-feedback',
  name: 'RobotFeedbackTool',
  component: RobotFeedbackPage
+ },
+ {
+ path: '/oss-transfer',
+ name: 'OssTransferTool',
+ component: OssTransferPage
  }
 ]
 

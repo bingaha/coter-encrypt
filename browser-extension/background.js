@@ -3,7 +3,7 @@ function cookieUrl(targetUrl, cookie) {
  const path = cookie.path || '/'
  const normalizedPath = path.startsWith('/') ? path : `/${path}`
 
- return `${cookie.secure ? 'https' : target.protocol}//${target.host}${normalizedPath}`
+ return `${cookie.secure ? 'https:' : target.protocol}//${target.host}${normalizedPath}`
 }
 
 function normalizeHostname(hostname) {

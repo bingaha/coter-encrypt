@@ -18,7 +18,8 @@ import {
  FolderOpenOutline,
  ReceiptOutline,
  SearchOutline,
- ServerOutline
+ ServerOutline,
+ SwapHorizontalOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
@@ -75,6 +76,15 @@ const toolEntries = [
  status: '可用',
  description: '按 task_id 和记录主键生成手动反馈 SQL 与 curl。',
  capabilities: ['更新 SQL', '反馈 curl', '一键复制']
+ },
+ {
+ id: 'oss-transfer',
+ title: 'OSS Key 转换',
+ routeName: 'OssTransferTool',
+ icon: SwapHorizontalOutline,
+ status: '可用',
+ description: '在生产环境与测试环境之间同步 OSS 文件，自动下载并重新上传。',
+ capabilities: ['生产↔测试', '自动下载上传', '一键复制']
  }
 ]
 

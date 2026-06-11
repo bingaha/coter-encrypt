@@ -1,6 +1,6 @@
 [package]
 name = "coter-encrypt-desktop"
-version = "0.1.5"
+version = "0.1.6"
 description = "Coter Encrypt desktop application"
 authors = ["Coter Encrypt"]
 edition = "2021"
@@ -23,6 +23,7 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql"] }
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

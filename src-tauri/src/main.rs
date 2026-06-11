@@ -5,6 +5,7 @@ mod cert_query;
 mod crypto;
 mod executor;
 mod har;
+mod oss_transfer;
 mod project_store;
 
 use coter_core::removed_module::{Request, Response};
@@ -202,6 +203,29 @@ mod tests {
 }
 
 #[tauri::command]
+async fn transfer_oss_key(
+ oss_key: String,
+ direction: String,
+) -> Result<oss_transfer::OssTransferResult, String> {
+ oss_transfer::transfer_oss_key(&oss_key, &direction).await
+}
+
+#[tauri::command]
+fn load_oss_transfer_history() -> Result<Vec<oss_transfer::TransferRecord>, String> {
+ oss_transfer::load_transfer_history()
+}
+
+#[tauri::command]
+fn delete_oss_transfer_record(id: String) -> Result<Vec<oss_transfer::TransferRecord>, String> {
+ oss_transfer::delete_transfer_record(&id)
+}
+
+#[tauri::command]
+fn clear_oss_transfer_history() -> Result<(), String> {
+ oss_transfer::clear_transfer_history()
+}
+
+#[tauri::command]
 fn process_har(request: har::HarProcessRequest) -> Result<har::HarProcessResponse, String> {
  har::process_har(request)
 }
@@ -233,7 +257,11 @@ fn main() {
  load_website_url_mappings,
  save_website_url_mapping,
  open_app_config_dir,
- open_default_browser_with_cookies
+ open_default_browser_with_cookies,
+ transfer_oss_key,
+ load_oss_transfer_history,
+ delete_oss_transfer_record,
+ clear_oss_transfer_history
  ])
  .run(tauri::generate_context!())
  .expect("error while running CoterEncrypt");
