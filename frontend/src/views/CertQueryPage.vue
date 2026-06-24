@@ -278,11 +278,17 @@ const hasWebsiteUrlMapping = (item) => {
 
 const openMappingModal = (item) => {
  const existing = getWebsiteUrlMapping(item)
+ const rules = existing?.storageRules
+ ? JSON.parse(JSON.stringify(existing.storageRules)).map(rule => ({
+ ...rule,
+ sourceType: rule.source?.path ? 'path' : 'value'
+ }))
+ : []
  mappingForm.value = {
  areaId: String(item.account.areaId || '').trim(),
  businessType: String(item.account.businessType || '').trim(),
  url: existing?.url || '',
- storageRules: existing?.storageRules ? JSON.parse(JSON.stringify(existing.storageRules)) : []
+ storageRules: rules
  }
  mappingModalVisible.value = true
 }
@@ -291,6 +297,7 @@ const addStorageRule = () => {
  mappingForm.value.storageRules.push({
  storage: 'sessionStorage',
  key: '',
+ sourceType: 'path',
  source: { path: '', value: '' }
  })
 }
@@ -317,7 +324,7 @@ const normalizeStorageRules = (rules) => {
  key: rule.key.trim(),
  source: {}
  }
- if (rule.source.path.trim()) {
+ if (rule.sourceType === 'path' && rule.source.path.trim()) {
  normalized.source.path = rule.source.path.trim()
  } else if (rule.source.value.trim()) {
  normalized.source.value = rule.source.value.trim()
@@ -740,26 +747,17 @@ n :disabled="index === 0"
  <label class="field-inline">
  <span>来源</span>
  <n-select
- :value="rule.source.path ? 'path' : 'value'"
+ v-model:value="rule.sourceType"
  :options="sourceTypeOptions"
  size="small"
  style="width: 160px"
- @update:value="(val) => {
- if (val === 'path') {
- rule.source.path = rule.source.value || ''
- rule.source.value = ''
- } else {
- rule.source.value = rule.source.path || ''
- rule.source.path = ''
- }
- }"
  />
  </label>
 
  <label class="field-inline" style="flex: 1">
- <span>{{ rule.source.path ? '路径' : '值' }}</span>
+ <span>{{ rule.sourceType === 'path' ? '路径' : '值' }}</span>
  <n-input
- v-if="rule.source.path"
+ v-if="rule.sourceType === 'path'"
  v-model:value="rule.source.path"
  placeholder="token 或 data.user.token"
  size="small"
