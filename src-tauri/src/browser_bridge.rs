@@ -35,6 +35,33 @@ pub struct WebsiteUrlMapping {
  pub area_id: String,
  pub business_type: String,
  pub url: String,
+ #[serde(default, skip_serializing_if = "Option::is_none")]
+ pub storage_rules: Option<Vec<StorageRule>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageRule {
+ pub storage: String,
+ pub key: String,
+ pub source: StorageSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageSource {
+ #[serde(default, skip_serializing_if = "Option::is_none")]
+ pub path: Option<String>,
+ #[serde(default, skip_serializing_if = "Option::is_none")]
+ pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageItem {
+ pub storage: String,
+ pub key: String,
+ pub value: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +87,8 @@ struct BridgePayload {
  request_id: String,
  target_url: String,
  cookies: Vec<BridgeCookie>,
+ #[serde(default, skip_serializing_if = "Vec::is_empty")]
+ storage_items: Vec<StorageItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -146,6 +175,7 @@ pub fn save_website_url_mapping(
  area_id: mapping.area_id.trim().to_string(),
  business_type: mapping.business_type.trim().to_string(),
  url: mapping.url.trim().to_string(),
+ storage_rules: mapping.storage_rules,
  };
 
  validate_url_mappings(std::slice::from_ref(&normalized))?;
@@ -184,8 +214,13 @@ pub async fn open_default_browser_with_cookies(
  let config = load_browser_bridge_config()?;
  validate_extension_id(&config.extension_id)?;
 
- let target_url = resolve_target_url(&request.area_id, &request.business_type)?;
+ let mapping = find_mapping(&request.area_id, &request.business_type)?;
+ let target_url = mapping.url.clone();
  let cookies = extract_cookies(&request.cert_info)?;
+ let storage_items = resolve_storage_items(
+ &request.cert_info,
+ mapping.storage_rules.as_deref(),
+ )?;
  let request_id = random_token(18);
  let token = random_token(32);
  let listener = TcpListener::bind("127.0.0.1:0")
@@ -207,6 +242,7 @@ pub async fn open_default_browser_with_cookies(
  request_id: request_id.clone(),
  target_url: target_url.clone(),
  cookies,
+ storage_items,
  };
 
  app.opener()
@@ -498,7 +534,7 @@ fn query_contains_token(query: Option<&str>, expected_token: &str) -> bool {
  .unwrap_or(false)
 }
 
-fn resolve_target_url(area_id: &str, business_type: &str) -> Result<String, String> {
+fn find_mapping(area_id: &str, business_type: &str) -> Result<WebsiteUrlMapping, String> {
  let area_id = area_id.trim();
  let business_type = business_type.trim();
 
@@ -516,7 +552,6 @@ fn resolve_target_url(area_id: &str, business_type: &str) -> Result<String, Stri
  .find(|mapping| {
  mapping.area_id.trim() == area_id && mapping.business_type.trim() == business_type
  })
- .map(|mapping| mapping.url)
  .ok_or_else(|| format!("未配置网站地址映射: area_id={area_id}, 办理类型={business_type}"))
 }
 
@@ -625,6 +660,7 @@ fn default_url_mappings() -> Vec<WebsiteUrlMapping> {
  area_id: "289".to_string(),
  business_type: "社保".to_string(),
  url: "https://sbwx.rst.shanxi.gov.cn:8007/ylwxsb/index.shtml".to_string(),
+ storage_rules: None,
  }]
 }
 
@@ -672,6 +708,75 @@ fn default_cookie_path() -> String {
  "/".to_string()
 }
 
+fn extract_storage_value(cert_info: &str, source: &StorageSource) -> Result<String, String> {
+ if let Some(path) = source.path.as_deref() {
+ let path = path.trim();
+ if path.is_empty() {
+ return Err("source.path 不能为空".to_string());
+ }
+
+ let value: Value =
+ serde_json::from_str(cert_info).map_err(|error| format!("cert_info 不是合法 JSON: {error}"))?;
+
+ let parts: Vec<&str> = path.split('.').collect();
+ let mut current = &value;
+
+ for part in &parts {
+ current = current
+ .get(part)
+ .ok_or_else(|| format!("cert_info 中未找到字段: {path}"))?;
+ }
+
+ match current {
+ Value::String(s) => Ok(s.clone()),
+ other => Ok(other.to_string()),
+ }
+ } else if let Some(value) = source.value.as_deref() {
+ Ok(value.to_string())
+ } else {
+ Err("source 必须指定 path 或 value".to_string())
+ }
+}
+
+fn resolve_storage_items(
+ cert_info: &str,
+ rules: Option<&[StorageRule]>,
+) -> Result<Vec<StorageItem>, String> {
+ let Some(rules) = rules else {
+ return Ok(Vec::new());
+ };
+
+ if rules.is_empty() {
+ return Ok(Vec::new());
+ }
+
+ let mut items = Vec::with_capacity(rules.len());
+
+ for rule in rules {
+ let storage = rule.storage.trim();
+ if storage != "sessionStorage" && storage != "localStorage" {
+ return Err(format!(
+ "不支持的存储类型: {storage}，仅支持 sessionStorage 或 localStorage"
+ ));
+ }
+
+ let key = rule.key.trim();
+ if key.is_empty() {
+ return Err("存储规则的 key 不能为空".to_string());
+ }
+
+ let value = extract_storage_value(cert_info, &rule.source)?;
+
+ items.push(StorageItem {
+ storage: storage.to_string(),
+ key: key.to_string(),
+ value,
+ });
+ }
+
+ Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
  use super::{extract_cookies, validate_extension_id};
@@ -702,5 +807,80 @@ mod tests {
  assert!(validate_extension_id("abcdefghijklmnopabcdefghijklmnop").is_ok());
  assert!(validate_extension_id("abc").is_err());
  assert!(validate_extension_id("abcdefghijklmnopabcdefghijklmnox").is_err());
+ }
+
+ #[test]
+ fn extracts_storage_value_from_top_level_field() {
+ let cert_info = r#"{"token":"eyJhbGciOiJIUzI1NiJ9","secretKey":"ABC123"}"#;
+ let source = super::StorageSource {
+ path: Some("token".to_string()),
+ value: None,
+ };
+ let value = super::extract_storage_value(cert_info, &source).unwrap();
+ assert_eq!(value, "eyJhbGciOiJIUzI1NiJ9");
+ }
+
+ #[test]
+ fn extracts_storage_value_from_nested_field() {
+ let cert_info = r#"{"data":{"user":{"token":"nested_value"}}}"#;
+ let source = super::StorageSource {
+ path: Some("data.user.token".to_string()),
+ value: None,
+ };
+ let value = super::extract_storage_value(cert_info, &source).unwrap();
+ assert_eq!(value, "nested_value");
+ }
+
+ #[test]
+ fn extracts_storage_fixed_value() {
+ let cert_info = r#"{"token":"abc"}"#;
+ let source = super::StorageSource {
+ path: None,
+ value: Some("{}".to_string()),
+ };
+ let value = super::extract_storage_value(cert_info, &source).unwrap();
+ assert_eq!(value, "{}");
+ }
+
+ #[test]
+ fn extracts_storage_value_fails_for_missing_field() {
+ let cert_info = r#"{"token":"abc"}"#;
+ let source = super::StorageSource {
+ path: Some("missing".to_string()),
+ value: None,
+ };
+ assert!(super::extract_storage_value(cert_info, &source).is_err());
+ }
+
+ #[test]
+ fn resolves_storage_items_with_mixed_rules() {
+ let cert_info = r#"{"token":"jwt_value","secret":"key123"}"#;
+ let rules = vec![
+ super::StorageRule {
+ storage: "sessionStorage".to_string(),
+ key: "token".to_string(),
+ source: super::StorageSource {
+ path: Some("token".to_string()),
+ value: None,
+ },
+ },
+ super::StorageRule {
+ storage: "localStorage".to_string(),
+ key: "redux".to_string(),
+ source: super::StorageSource {
+ path: None,
+ value: Some("{}".to_string()),
+ },
+ },
+ ];
+
+ let items = super::resolve_storage_items(cert_info, Some(&rules)).unwrap();
+ assert_eq!(items.len(), 2);
+ assert_eq!(items[0].storage, "sessionStorage");
+ assert_eq!(items[0].key, "token");
+ assert_eq!(items[0].value, "jwt_value");
+ assert_eq!(items[1].storage, "localStorage");
+ assert_eq!(items[1].key, "redux");
+ assert_eq!(items[1].value, "{}");
  }
 }

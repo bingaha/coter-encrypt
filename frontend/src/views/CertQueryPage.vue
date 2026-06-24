@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import {
  NButton,
  NEmpty,
@@ -54,15 +54,24 @@ const savingBridgeConfig = ref(false)
 const websiteUrlMappings = ref([])
 const loadingMappings = ref(false)
 const openingKey = ref('')
-const pendingMappingKey = ref('')
-let pendingMappingTimer = null
 const mappingModalVisible = ref(false)
 const mappingForm = ref({
  areaId: '',
  businessType: '',
- url: ''
+ url: '',
+ storageRules: []
 })
 const savingMapping = ref(false)
+
+const storageTypeOptions = [
+ { label: 'sessionStorage', value: 'sessionStorage' },
+ { label: 'localStorage', value: 'localStorage' }
+]
+
+const sourceTypeOptions = [
+ { label: '从 cert_info 取值', value: 'path' },
+ { label: '固定值', value: 'value' }
+]
 
 const queryForm = ref({
  mainName: '',
@@ -248,60 +257,74 @@ const canOpenItem = (item) => {
  )
 }
 
-const mappingKeyOf = (item) => {
- return `${item.account.areaId || ''}::${item.account.businessType || ''}`
-}
-
-const hasWebsiteUrlMapping = (item) => {
+const getWebsiteUrlMapping = (item) => {
  const areaId = String(item.account.areaId || '').trim()
  const businessType = String(item.account.businessType || '').trim()
 
  if (!areaId || !businessType) {
- return false
+ return null
  }
 
- return websiteUrlMappings.value.some(mapping =>
+ return websiteUrlMappings.value.find(mapping =>
  String(mapping.areaId || '').trim() === areaId &&
- String(mapping.businessType || '').trim() === businessType &&
- String(mapping.url || '').trim()
- )
+ String(mapping.businessType || '').trim() === businessType
+ ) || null
 }
 
-const clearPendingMappingClick = () => {
- pendingMappingKey.value = ''
- if (pendingMappingTimer) {
- window.clearTimeout(pendingMappingTimer)
- pendingMappingTimer = null
- }
+const hasWebsiteUrlMapping = (item) => {
+ const mapping = getWebsiteUrlMapping(item)
+ return Boolean(mapping && String(mapping.url || '').trim())
 }
 
 const openMappingModal = (item) => {
- clearPendingMappingClick()
+ const existing = getWebsiteUrlMapping(item)
  mappingForm.value = {
  areaId: String(item.account.areaId || '').trim(),
  businessType: String(item.account.businessType || '').trim(),
- url: ''
+ url: existing?.url || '',
+ storageRules: existing?.storageRules ? JSON.parse(JSON.stringify(existing.storageRules)) : []
  }
  mappingModalVisible.value = true
 }
 
-const handleMissingMappingClick = (item) => {
- const key = mappingKeyOf(item)
+const addStorageRule = () => {
+ mappingForm.value.storageRules.push({
+ storage: 'sessionStorage',
+ key: '',
+ source: { path: '', value: '' }
+ })
+}
 
- if (pendingMappingKey.value === key) {
- openMappingModal(item)
- return true
+const removeStorageRule = (index) => {
+ mappingForm.value.storageRules.splice(index, 1)
+}
+
+const moveStorageRule = (index, direction) => {
+ const rules = mappingForm.value.storageRules
+ const newIndex = index + direction
+ if (newIndex < 0 || newIndex >= rules.length) return
+ const temp = rules[index]
+ rules[index] = rules[newIndex]
+ rules[newIndex] = temp
+}
+
+const normalizeStorageRules = (rules) => {
+ return rules
+ .filter(rule => rule.key.trim())
+ .map(rule => {
+ const normalized = {
+ storage: rule.storage,
+ key: rule.key.trim(),
+ source: {}
  }
-
- clearPendingMappingClick()
- pendingMappingKey.value = key
- message.warning('无配置，再次点击可配置首页地址', { duration: 2000 })
- pendingMappingTimer = window.setTimeout(() => {
- pendingMappingKey.value = ''
- pendingMappingTimer = null
- }, 2000)
-
- return true
+ if (rule.source.path.trim()) {
+ normalized.source.path = rule.source.path.trim()
+ } else if (rule.source.value.trim()) {
+ normalized.source.value = rule.source.value.trim()
+ }
+ return normalized
+ })
+ .filter(rule => rule.source.path || rule.source.value)
 }
 
 const handleSaveMapping = async () => {
@@ -312,16 +335,18 @@ const handleSaveMapping = async () => {
 
  savingMapping.value = true
  try {
+ const normalizedRules = normalizeStorageRules(mappingForm.value.storageRules)
  const response = await saveWebsiteUrlMapping({
  areaId: mappingForm.value.areaId.trim(),
  businessType: mappingForm.value.businessType.trim(),
- url: mappingForm.value.url.trim()
+ url: mappingForm.value.url.trim(),
+ storageRules: normalizedRules.length > 0 ? normalizedRules : undefined
  })
  websiteUrlMappings.value = response.data || []
  mappingModalVisible.value = false
- message.success('网站首页地址已保存')
+ message.success('配置已保存')
  } catch (error) {
- message.error(error?.message || '保存网站首页地址失败')
+ message.error(error?.message || '保存配置失败')
  } finally {
  savingMapping.value = false
  }
@@ -333,7 +358,9 @@ const handleOpenDefaultBrowser = async (item, index) => {
  return
  }
 
- if (!hasWebsiteUrlMapping(item) && handleMissingMappingClick(item)) {
+ if (!hasWebsiteUrlMapping(item)) {
+ message.warning('请先配置网站地址')
+ openMappingModal(item)
  return
  }
 
@@ -362,10 +389,6 @@ onMounted(() => {
  loadConfig()
  loadBridgeConfig()
  loadMappings()
-})
-
-onBeforeUnmount(() => {
- clearPendingMappingClick()
 })
 </script>
 
@@ -555,6 +578,16 @@ onBeforeUnmount(() => {
  {{ copiedKey === `${item.account.loginKey}-cert` ? '已复制' : '复制 cert_info' }}
  </n-button>
  <n-button
+ secondary
+ size="small"
+ @click="openMappingModal(item)"
+ >
+ <template #icon>
+ <n-icon><SaveOutline /></n-icon>
+ </template>
+ 配置地址
+ </n-button>
+ <n-button
  type="primary"
  size="small"
  :disabled="!canOpenItem(item)"
@@ -608,8 +641,8 @@ onBeforeUnmount(() => {
  <n-modal
  v-model:show="mappingModalVisible"
  preset="card"
- title="配置网站首页地址"
- style="width: min(520px, calc(100vw - 32px))"
+ title="配置网站地址和存储规则"
+ style="width: min(640px, calc(100vw - 32px))"
  >
  <div class="mapping-modal-form">
  <label class="field-block">
@@ -629,14 +662,118 @@ onBeforeUnmount(() => {
  </label>
 
  <label class="field-block">
- <span>首页地址</span>
+ <span>登录地址</span>
  <n-input
  v-model:value="mappingForm.url"
- placeholder="https://example.com/"
+ placeholder="https://example.com/login"
  clearable
- @keydown.enter.prevent="handleSaveMapping"
  />
  </label>
+
+ <div class="storage-rules-section">
+ <div class="storage-rules-header">
+ <span>存储写入规则</span>
+ <n-button size="small" @click="addStorageRule">
+ + 添加规则
+ </n-button>
+ </div>
+
+ <div v-if="mappingForm.storageRules.length === 0" class="storage-rules-empty">
+ 暂无规则，点击上方按钮添加
+ </div>
+
+ <div
+ v-for="(rule, index) in mappingForm.storageRules"
+ :key="index"
+ class="storage-rule-item"
+ >
+ <div class="storage-rule-row">
+ <label class="field-inline">
+ <span>存储类型</span>
+ <n-select
+ v-model:value="rule.storage"
+ :options="storageTypeOptions"
+ size="small"
+ style="width: 160px"
+ />
+ </label>
+
+ <label class="field-inline">
+ <span>键名</span>
+ <n-input
+ v-model:value="rule.key"
+ placeholder="key"
+ size="small"
+ style="width: 160px"
+ />
+ </label>
+
+ <div class="storage-rule-actions">
+ <n-button
+ size="small"
+ quaternary
+n :disabled="index === 0"
+ @click="moveStorageRule(index, -1)"
+ >
+ ↑
+ </n-button>
+ <n-button
+ size="small"
+ quaternary
+ :disabled="index === mappingForm.storageRules.length - 1"
+ @click="moveStorageRule(index, 1)"
+ >
+ ↓
+ </n-button>
+ <n-button
+ size="small"
+ quaternary
+ type="error"
+ @click="removeStorageRule(index)"
+ >
+ 删除
+ </n-button>
+ </div>
+ </div>
+
+ <div class="storage-rule-row">
+ <label class="field-inline">
+ <span>来源</span>
+ <n-select
+ :value="rule.source.path ? 'path' : 'value'"
+ :options="sourceTypeOptions"
+ size="small"
+ style="width: 160px"
+ @update:value="(val) => {
+ if (val === 'path') {
+ rule.source.path = rule.source.value || ''
+ rule.source.value = ''
+ } else {
+ rule.source.value = rule.source.path || ''
+ rule.source.path = ''
+ }
+ }"
+ />
+ </label>
+
+ <label class="field-inline" style="flex: 1">
+ <span>{{ rule.source.path ? '路径' : '值' }}</span>
+ <n-input
+ v-if="rule.source.path"
+ v-model:value="rule.source.path"
+ placeholder="token 或 data.user.token"
+ size="small"
+ />
+ <n-input
+ v-else
+ v-model:value="rule.source.value"
+ placeholder="固定值"
+ size="small"
+ />
+ </label>
+ </div>
+ </div>
+ </div>
 
  <div class="modal-actions">
  <n-button @click="mappingModalVisible = false">
@@ -928,6 +1065,69 @@ onBeforeUnmount(() => {
  justify-content: flex-end;
  gap: 8px;
  margin-top: 6px;
+}
+
+.storage-rules-section {
+ border: 1px solid var(--n-border-color, #e0e0e6);
+ border-radius: 8px;
+ padding: 14px;
+}
+
+.storage-rules-header {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ margin-bottom: 12px;
+ font-size: 13px;
+ font-weight: 600;
+ color: var(--n-text-color-2, #666666);
+}
+
+.storage-rules-empty {
+ text-align: center;
+ padding: 16px;
+ color: var(--n-text-color-3, #999999);
+ font-size: 13px;
+}
+
+.storage-rule-item {
+ padding: 12px;
+ border: 1px solid var(--n-border-color, #e0e0e6);
+ border-radius: 6px;
+ margin-bottom: 10px;
+ background-color: var(--n-action-color, rgba(0, 0, 0, 0.02));
+}
+
+.storage-rule-item:last-child {
+ margin-bottom: 0;
+}
+
+.storage-rule-row {
+ display: flex;
+ align-items: flex-end;
+ gap: 10px;
+ margin-bottom: 10px;
+}
+
+.storage-rule-row:last-child {
+ margin-bottom: 0;
+}
+
+.field-inline {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+}
+
+.field-inline > span {
+ font-size: 12px;
+ color: var(--n-text-color-3, #999999);
+}
+
+.storage-rule-actions {
+ display: flex;
+ gap: 4px;
+ margin-left: auto;
 }
 
 @media (max-width: 960px) {

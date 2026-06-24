@@ -168,6 +168,47 @@ async function setCookie(targetUrl, cookie) {
  return chrome.cookies.set(details)
 }
 
+function waitForTabLoad(tabId) {
+ return new Promise((resolve, reject) => {
+ const timeout = setTimeout(() => {
+ chrome.tabs.onUpdated.removeListener(listener)
+ reject(new Error('等待页面加载超时'))
+ }, 30000)
+
+ function listener(updatedTabId, info) {
+ if (updatedTabId === tabId && info.status === 'complete') {
+ chrome.tabs.onUpdated.removeListener(listener)
+ clearTimeout(timeout)
+ resolve()
+ }
+ }
+
+ chrome.tabs.onUpdated.addListener(listener)
+ })
+}
+
+async function injectStorageItems(tabId, storageItems) {
+ if (!storageItems || storageItems.length === 0) {
+ return false
+ }
+
+ await chrome.scripting.executeScript({
+ target: { tabId },
+ func: (items) => {
+ for (const item of items) {
+ if (item.storage === 'sessionStorage') {
+ sessionStorage.setItem(item.key, item.value)
+ } else if (item.storage === 'localStorage') {
+ localStorage.setItem(item.key, item.value)
+ }
+ }
+ },
+ args: [storageItems]
+ })
+
+ return true
+}
+
 async function writeCookiesAndOpen(payload, sender) {
  if (payload.type !== 'openWithCookies') {
  throw new Error('消息类型不支持')
@@ -175,19 +216,21 @@ async function writeCookiesAndOpen(payload, sender) {
 
  const targetUrl = String(payload.targetUrl || '')
  const cookies = Array.isArray(payload.cookies) ? payload.cookies : []
+ const storageItems = Array.isArray(payload.storageItems) ? payload.storageItems : []
 
  if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
  throw new Error('目标地址不合法')
  }
 
- if (cookies.length === 0) {
- throw new Error('Cookie 列表为空')
+ if (cookies.length === 0 && storageItems.length === 0) {
+ throw new Error('Cookie 列表和存储规则均为空')
  }
 
  const errors = []
  let written = 0
  let cleared = 0
 
+ // 1. 清除并写入 Cookie
  try {
  const clearResult = await clearCookiesForTarget(targetUrl)
  cleared = clearResult.cleared
@@ -205,17 +248,30 @@ async function writeCookiesAndOpen(payload, sender) {
  }
  }
 
- if (written === 0) {
+ if (cookies.length > 0 && written === 0) {
  throw new Error(errors.length ? errors.join('; ') : '没有 Cookie 写入成功')
  }
 
- const tabId = sender?.tab?.id
+ // 2. 创建新标签页打开目标页面
+ const tab = await chrome.tabs.create({ url: targetUrl, active: true })
 
- if (typeof tabId !== 'number') {
- throw new Error('无法定位当前浏览器标签页')
+ // 3. 等待页面加载完成
+ await waitForTabLoad(tab.id)
+
+ // 4. 注入 sessionStorage/localStorage
+ let storageInjected = false
+ if (storageItems.length > 0) {
+ try {
+ storageInjected = await injectStorageItems(tab.id, storageItems)
+ } catch (error) {
+ errors.push(`写入存储失败: ${error?.message || String(error)}`)
+ }
  }
 
- await chrome.tabs.update(tabId, { url: targetUrl })
+ // 5. 如果注入了存储，刷新页面让页面读取预设值
+ if (storageInjected) {
+ await chrome.tabs.reload(tab.id)
+ }
 
  return {
  type: 'openWithCookiesResult',
