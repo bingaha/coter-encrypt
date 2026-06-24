@@ -221,6 +221,11 @@ pub async fn open_default_browser_with_cookies(
  &request.cert_info,
  mapping.storage_rules.as_deref(),
  )?;
+
+ if cookies.is_empty() && storage_items.is_empty() {
+ return Err("cert_info 中未找到 cookies 或存储规则".to_string());
+ }
+
  let request_id = random_token(18);
  let token = random_token(32);
  let listener = TcpListener::bind("127.0.0.1:0")
@@ -557,15 +562,14 @@ fn find_mapping(area_id: &str, business_type: &str) -> Result<WebsiteUrlMapping,
 
 fn extract_cookies(cert_info: &str) -> Result<Vec<BridgeCookie>, String> {
  if cert_info.trim().is_empty() {
- return Err("cert_info 为空，无法提取 Cookie".to_string());
+ return Ok(Vec::new());
  }
 
  let value: Value = serde_json::from_str(cert_info)
  .map_err(|error| format!("cert_info 不是合法 JSON: {error}"))?;
- let cookies_value = value
- .get("cookies")
- .or_else(|| value.get("cookie"))
- .ok_or_else(|| "cert_info 中未找到 cookies 或 cookie 字段".to_string())?;
+ let Some(cookies_value) = value.get("cookies").or_else(|| value.get("cookie")) else {
+ return Ok(Vec::new());
+ };
 
  let cookies: Vec<BridgeCookie> = match cookies_value {
  Value::String(text) => serde_json::from_str(text)
@@ -579,10 +583,6 @@ fn extract_cookies(cert_info: &str) -> Result<Vec<BridgeCookie>, String> {
  .into_iter()
  .map(normalize_cookie)
  .collect::<Result<Vec<_>, _>>()?;
-
- if cookies.is_empty() {
- return Err("cookies 列表为空".to_string());
- }
 
  Ok(cookies)
 }

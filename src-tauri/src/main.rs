@@ -9,6 +9,7 @@ mod oss_transfer;
 mod project_store;
 
 use coter_core::removed_module::{Request, Response};
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
@@ -234,6 +235,11 @@ fn main() {
  tauri::Builder::default()
  .plugin(tauri_plugin_dialog::init())
  .plugin(tauri_plugin_opener::init())
+ .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+ if let Some(window) = app.get_webview_window("main") {
+ let _ = window.set_focus();
+ }
+ }))
  .invoke_handler(tauri::generate_handler![
  ping,
  list_projects,

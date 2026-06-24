@@ -34,7 +34,11 @@ provide('toggleTheme', toggleTheme)
  <n-dialog-provider>
  <n-notification-provider>
  <div class="app-container">
- <router-view />
+ <router-view v-slot="{ Component }">
+ <keep-alive>
+ <component :is="Component" />
+ </keep-alive>
+ </router-view>
  <mysql-datasource-modal />
  </div>
  </n-notification-provider>
