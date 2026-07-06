@@ -51,6 +51,7 @@ const statusOptions = [
 const form = ref({
  taskId: '',
  schemaName: 'platform_crawler',
+ statusCondition: '',
  endpoint: 'http://localhost:8080/robotTask/handFeedBack',
  status: 1,
  msg: defaultMessages[1],
@@ -114,6 +115,7 @@ const escapePowerShellSingleQuoted = (value) => {
  return String(value ?? '').replace(/'/g, "''")
 }
 
+const normalizedStatusCondition = computed(() => normalizePositiveInteger(form.value.statusCondition))
 const normalizedTaskId = computed(() => normalizePositiveInteger(form.value.taskId))
 const hasTaskId = computed(() => Boolean(normalizedTaskId.value))
 const schemaName = computed(() => form.value.schemaName.trim())
@@ -152,6 +154,12 @@ const qualifiedTable = (tableName) => {
  return schemaName.value ? `${schemaName.value}.${tableName}` : tableName
 }
 
+const statusClause = computed(() => {
+ return normalizedStatusCondition.value
+ ? ` AND status = ${normalizedStatusCondition.value}`
+ : ''
+})
+
 const querySql = computed(() => {
  if (!canGenerateSql.value) {
  return ''
@@ -160,11 +168,11 @@ const querySql = computed(() => {
  return [
  `SELECT *`,
  `FROM ${qualifiedTable('robot_task_user')}`,
- `WHERE task_id = ${normalizedTaskId.value};`,
+ `WHERE task_id = ${normalizedTaskId.value}${statusClause.value};`,
  '',
  `SELECT id, status, msg`,
  `FROM ${qualifiedTable('robot_task_user_ins')}`,
- `WHERE task_id = ${normalizedTaskId.value};`
+ `WHERE task_id = ${normalizedTaskId.value}${statusClause.value};`
  ].join('\n')
 })
 
@@ -174,10 +182,10 @@ const updateSql = computed(() => {
  }
 
  const userSql = taskUserIds.value.map(id => {
- return `UPDATE ${qualifiedTable('robot_task_user')} SET status = ${form.value.status}, msg = '${escapedSqlMsg.value}' WHERE id = ${id} AND task_id = ${normalizedTaskId.value};`
+ return `UPDATE ${qualifiedTable('robot_task_user')} SET status = ${form.value.status}, msg = '${escapedSqlMsg.value}' WHERE id = ${id} AND task_id = ${normalizedTaskId.value}${statusClause.value};`
  })
  const insSql = taskUserInsIds.value.map(id => {
- return `UPDATE ${qualifiedTable('robot_task_user_ins')} SET status = ${form.value.status}, msg = '${escapedSqlMsg.value}' WHERE id = ${id} AND task_id = ${normalizedTaskId.value};`
+ return `UPDATE ${qualifiedTable('robot_task_user_ins')} SET status = ${form.value.status}, msg = '${escapedSqlMsg.value}' WHERE id = ${id} AND task_id = ${normalizedTaskId.value}${statusClause.value};`
  })
  const parts = []
 
@@ -275,7 +283,8 @@ const handleQueryDatabase = async () => {
  try {
  const response = await queryRobotTaskFeedbackData({
  taskId: normalizedTaskId.value,
- schemaName: schemaName.value || null
+ schemaName: schemaName.value || null,
+ statusCondition: normalizedStatusCondition.value || null
  })
  const data = response.data || {}
  const taskUsers = data.taskUsers || []
@@ -328,6 +337,7 @@ const resetForm = () => {
  form.value = {
  taskId: '',
  schemaName: 'platform_crawler',
+ statusCondition: '',
  endpoint: 'http://localhost:8080/robotTask/handFeedBack',
  status: 1,
  msg: defaultMessages[1],
@@ -459,6 +469,15 @@ onBeforeUnmount(() => {
  />
  </label>
  </div>
+
+ <label class="field-block status-condition-field">
+ <span>status 条件（可选）</span>
+ <n-input
+ v-model:value="form.statusCondition"
+ placeholder="留空则不过滤"
+ clearable
+ />
+ </label>
 
  <div class="query-actions">
  <n-button
@@ -866,6 +885,10 @@ onBeforeUnmount(() => {
 
 .base-grid {
  grid-template-columns: minmax(0, 1fr) minmax(150px, 180px);
+}
+
+.status-condition-field {
+ margin-top: 14px;
 }
 
 .query-actions {

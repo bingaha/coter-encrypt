@@ -14,6 +14,7 @@ import {
  AddOutline,
  ArrowBackOutline,
  ClipboardOutline,
+ ColorWandOutline,
  CopyOutline,
  OpenOutline,
  MoonOutline,
@@ -37,6 +38,10 @@ const selectedAuditTag = ref(null)
 const copied = ref(false)
 const openingCls = ref(false)
 let copiedTimer = null
+
+const pasteText = ref('')
+const parsing = ref(false)
+const parsePlaceholder = '粘贴任务通知，例如：\n网站:【太原】-【参保用户新增】-【社保】\n企业名称:【山西智服人力资源有限公司】\n月份:【202607】'
 
 const CLS_SEARCH_BASE_URL = 'https://console.cloud.tencent.com/cls/search?time=now-5m,now&topicType=log&multiple=false&timeZone=browser&analysis=eyJ0eXBlIjoidGFibGUifQ&region=ap-guangzhou&topic_id=e1a31d83-3230-4658-a59c-4e046bec2752&queryBase64=待补充&disabledRanges=W10'
 
@@ -686,6 +691,149 @@ const removeKeyword = (id) => {
  keywords.value = keywords.value.filter(keyword => keyword.id !== id)
 }
 
+const BUSINESS_DELIMITER_CHARS = new Set([
+ '', '（', '(', '—', '–', '-', '－', ':', '：',
+ ' ', '　', '，', ',', '、', '/', '；'
+])
+
+const extractBracketContents = (text) => {
+ if (!text) return []
+ const matches = String(text).match(/【([^】]*)】/g)
+ if (!matches) return []
+ return matches.map(match => match.slice(1, -1).trim())
+}
+
+const findCityValue = (label) => {
+ const keyword = (label || '').trim()
+ if (!keyword) return null
+
+ for (const group of cityGroups) {
+ const matched = group.cities.find(city => city.label === keyword)
+ if (matched) return matched.value
+ }
+
+ for (const group of cityGroups) {
+ const matched = group.cities.find(city =>
+ city.label.includes(keyword) || keyword.includes(city.label)
+ )
+ if (matched) return matched.value
+ }
+
+ return null
+}
+
+const findBusinessTypeValue = (label) => {
+ const keyword = (label || '').trim()
+ if (!keyword) return null
+
+ const candidates = businessTypeOptions.filter(option =>
+ String(option.label).startsWith(keyword)
+ )
+
+ if (candidates.length > 0) {
+ const strong = candidates.find(option => {
+ const nextChar = String(option.label).slice(keyword.length).charAt(0)
+ return BUSINESS_DELIMITER_CHARS.has(nextChar)
+ })
+ return (strong || candidates[0]).value
+ }
+
+ const includes = businessTypeOptions.find(option =>
+ String(option.label).includes(keyword)
+ )
+ return includes ? includes.value : null
+}
+
+const handleParsePaste = () => {
+ const text = (pasteText.value || '').trim()
+ if (!text) {
+ message.warning('请先粘贴需要解析的内容')
+ return
+ }
+
+ parsing.value = true
+ try {
+ const websiteRegex = /站\s*[:：]\s*([^\n]+)/
+ const companyRegex = /(?:企业名称|公司名称)\s*[:：]\s*([^\n]+)/
+
+ const lines = text.split(/\r?\n/)
+
+ let websiteIndex = -1
+ let websiteContent = ''
+ for (let i = 0; i < lines.length; i += 1) {
+ const match = lines[i].match(websiteRegex)
+ if (match) {
+ websiteIndex = i
+ websiteContent = match[1]
+ break
+ }
+ }
+
+ if (websiteIndex === -1) {
+ message.warning('未识别到「网站」信息，无法解析')
+ return
+ }
+
+ const totalWebsiteLines = lines.filter(line => websiteRegex.test(line)).length
+
+ let companyContent = ''
+ for (let i = websiteIndex + 1; i < lines.length; i += 1) {
+ if (websiteRegex.test(lines[i])) break
+ const match = lines[i].match(companyRegex)
+ if (match) {
+ companyContent = match[1]
+ break
+ }
+ }
+
+ const segments = extractBracketContents(websiteContent)
+ const cityLabel = segments[0] || ''
+ const businessLabel = segments[1] || ''
+ const projectLabel = segments[2] || ''
+
+ const cityValue = findCityValue(cityLabel)
+ const businessValue = findBusinessTypeValue(businessLabel)
+
+ let companyKeyword = companyContent.trim()
+ const companyBracket = companyKeyword.match(/【([^】]*)】/)
+ if (companyBracket) {
+ companyKeyword = companyBracket[1].trim()
+ } else {
+ companyKeyword = companyKeyword.replace(/[【】]/g, '').trim()
+ }
+
+ const newKeywords = []
+ if (projectLabel) newKeywords.push(projectLabel)
+ if (companyKeyword) newKeywords.push(companyKeyword)
+
+ selectedApp.value = 'platform-crawler-service'
+ selectedCity.value = cityValue
+ selectedBusinessType.value = businessValue
+ keywords.value = newKeywords.length
+ ? newKeywords.map(value => ({ id: createKeywordId(), value }))
+ : [{ id: createKeywordId(), value: '' }]
+
+ const summary = []
+ summary.push('App「platform-crawler-service」')
+ if (cityValue) summary.push(`城市「${cityLabel}」`)
+ if (businessValue) summary.push(`办理类型「${businessLabel}」`)
+ if (newKeywords.length) summary.push(`关键词 ${newKeywords.length} 项`)
+ if (totalWebsiteLines > 1) summary.push(`共 ${totalWebsiteLines} 条，已解析第 1 条`)
+
+ if (summary.length) {
+ message.success(`解析完成：${summary.join('，')}`)
+ } else {
+ message.warning('未识别到有效信息，请检查粘贴内容')
+ }
+ } finally {
+ parsing.value = false
+ }
+}
+
+const handleClearPaste = () => {
+ pasteText.value = ''
+}
+
 const handleCopy = async () => {
  if (!hasExpression.value) {
  message.warning('暂无可复制的表达式')
@@ -778,6 +926,37 @@ onBeforeUnmount(() => {
 
  <section class="page-shell">
  <div class="form-area">
+ <section class="panel">
+ <div class="panel-heading panel-heading-row">
+ <h2>粘贴解析</h2>
+ <div class="parse-actions">
+ <n-button tertiary size="small" @click="handleClearPaste">清空</n-button>
+ <n-button
+ type="primary"
+ size="small"
+ :loading="parsing"
+ @click="handleParsePaste"
+ >
+ <template #icon>
+ <n-icon><ColorWandOutline /></n-icon>
+ </template>
+ 解析
+ </n-button>
+ </div>
+ </div>
+
+ <n-input
+ v-model:value="pasteText"
+ type="textarea"
+ :autosize="{ minRows: 4, maxRows: 12 }"
+ :placeholder="parsePlaceholder"
+ />
+
+ <n-text depth="3" class="parse-hint">
+ 支持完整通知或残缺内容（如「站:」开头、月份被截断）。自动识别城市与办理类型，并将办理项目（第三个括号）和企业名称填入自定义关键词。一次粘贴多条任务时仅解析第一条。
+ </n-text>
+ </section>
+
  <section class="panel">
  <div class="panel-heading">
  <h2>查询条件</h2>
@@ -1113,6 +1292,18 @@ onBeforeUnmount(() => {
 .keyword-list {
  display: grid;
  gap: 10px;
+}
+
+.parse-actions {
+ display: flex;
+ gap: 8px;
+}
+
+.parse-hint {
+ display: block;
+ margin-top: 10px;
+ font-size: 12px;
+ line-height: 1.6;
 }
 
 .keyword-row {

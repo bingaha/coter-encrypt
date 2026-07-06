@@ -101,6 +101,8 @@ pub struct RobotTaskFeedbackQueryRequest {
  pub task_id: String,
  #[serde(default)]
  pub schema_name: Option<String>,
+ #[serde(default)]
+ pub status_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,8 +215,12 @@ pub async fn query_robot_task_feedback_data(
  let stored = resolve_config(None)?;
  let pool = connect_pool(&stored).await?;
 
- let task_users = query_robot_task_users(&pool, task_id, schema_name.as_deref()).await?;
- let task_user_ins = query_robot_task_user_ins(&pool, task_id, schema_name.as_deref()).await?;
+ let status_condition = parse_optional_task_id(request.status_condition.as_deref())?;
+ let task_users =
+ query_robot_task_users(&pool, task_id, status_condition, schema_name.as_deref()).await?;
+ let task_user_ins =
+ query_robot_task_user_ins(&pool, task_id, status_condition, schema_name.as_deref())
+ .await?;
 
  pool.close().await;
  Ok(RobotTaskFeedbackQueryResponse {
@@ -309,22 +315,31 @@ async fn query_latest_cert(
 async fn query_robot_task_users(
  pool: &MySqlPool,
  task_id: i64,
+ status_condition: Option<i64>,
  schema_name: Option<&str>,
 ) -> Result<Vec<RobotTaskUserFeedbackRow>, String> {
  let table = qualify_table_name(schema_name, "robot_task_user");
+ let status_clause = if status_condition.is_some() {
+ " AND status = ?"
+ } else {
+ ""
+ };
  let sql = format!(
  r#"
  SELECT CAST(id AS CHAR) AS id,
  CAST(status AS CHAR) AS status,
  msg
  FROM {table}
- WHERE task_id = ?
+ WHERE task_id = ?{status_clause}
  ORDER BY id
  "#
  );
 
- let rows = sqlx::query(&sql)
- .bind(task_id)
+ let mut query = sqlx::query(&sql).bind(task_id);
+ if let Some(sc) = status_condition {
+ query = query.bind(sc);
+ }
+ let rows = query
  .fetch_all(pool)
  .await
  .map_err(|error| format!("查询 robot_task_user 失败: {error}"))?;
@@ -351,9 +366,15 @@ async fn query_robot_task_users(
 async fn query_robot_task_user_ins(
  pool: &MySqlPool,
  task_id: i64,
+ status_condition: Option<i64>,
  schema_name: Option<&str>,
 ) -> Result<Vec<RobotTaskUserInsFeedbackRow>, String> {
  let table = qualify_table_name(schema_name, "robot_task_user_ins");
+ let status_clause = if status_condition.is_some() {
+ " AND status = ?"
+ } else {
+ ""
+ };
  let sql = format!(
  r#"
  SELECT CAST(id AS CHAR) AS id,
@@ -362,13 +383,16 @@ async fn query_robot_task_user_ins(
  msg,
  CAST(feedback_ed AS CHAR) AS feedback_ed
  FROM {table}
- WHERE task_id = ?
+ WHERE task_id = ?{status_clause}
  ORDER BY id
  "#
  );
 
- let rows = sqlx::query(&sql)
- .bind(task_id)
+ let mut query = sqlx::query(&sql).bind(task_id);
+ if let Some(sc) = status_condition {
+ query = query.bind(sc);
+ }
+ let rows = query
  .fetch_all(pool)
  .await
  .map_err(|error| format!("查询 robot_task_user_ins 失败: {error}"))?;
@@ -440,6 +464,12 @@ fn parse_task_id(input: &str) -> Result<i64, String> {
  Ok(task_id)
 }
 
+fn parse_optional_task_id(value: Option<&str>) -> Result<Option<i64>, String> {
+ match value {
+ Some(input) if !input.trim().is_empty() => parse_task_id(input).map(Some),
+ _ => Ok(None),
+ }
+}
 fn normalize_schema_name(input: Option<&str>) -> Result<Option<String>, String> {
  let Some(input) = input else {
  return Ok(None);
