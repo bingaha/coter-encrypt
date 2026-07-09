@@ -263,3 +263,24 @@ chrome-extension://<插件ID>/bridge.html?port=...&token=...
 - `npm --prefix frontend run build`：通过。
 - `cargo check -p coter-encrypt-desktop`：通过。
 - `powershell -ExecutionPolicy Bypass -File tools\package-browser-extension.ps1`：通过，重新生成 `dist/coter-cookie-bridge.zip`。
+
+## 2026-07-09 exe 打包
+
+### 开发任务
+
+1. [已完成] 基于当前 Tauri 桌面主线执行生产构建，生成 Windows 可运行 `exe` 产物。
+
+### 验证记录
+
+- `npm run tauri:build`：通过，生成 `target/release/CoterEncrypt.exe` 和 `target/release/bundle/nsis/CoterEncrypt_0.1.7_x64-setup.exe`。
+
+## 2026-07-09 安装包补齐 WebView2Loader.dll
+
+### 开发任务
+
+1. [已完成] 通过 Tauri NSIS `installerHooks` 将 `WebView2Loader.dll` 一并安装到应用目录，修复安装版启动时报缺 DLL 的问题。
+
+### 验证记录
+
+- `npm run tauri:build`：通过，重新生成 `target/release/bundle/nsis/CoterEncrypt_0.1.7_x64-setup.exe`。
+- `7z l target\release\bundle\nsis\CoterEncrypt_0.1.7_x64-setup.exe`：通过，安装包内已包含 `WebView2Loader.dll` 和 `CoterEncrypt.exe`。
