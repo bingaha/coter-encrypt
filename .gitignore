@@ -86,3 +86,6 @@ Thumbs.db
 *.swo
 *~
 .pi/
+
+# release packaging outputs (too large for GitHub)
+release/
