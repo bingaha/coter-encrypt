@@ -432,7 +432,7 @@ mod tests {
  &inputs,
  &outputs
  ),
- "hello Rust $ { } /"
+ "hello Rust  $ { } /"
  );
  }
 
