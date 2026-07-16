@@ -344,6 +344,8 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="hex">HEX</n-radio>
  <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>
@@ -419,6 +421,8 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="hex">HEX</n-radio>
  <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>
@@ -501,6 +505,8 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="hex">HEX</n-radio>
  <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>
@@ -633,6 +639,8 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="hex">HEX</n-radio>
  <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>
@@ -692,6 +700,8 @@ watch(localConfig, (newConfig) => {
  <n-space>
  <n-radio value="hex">HEX</n-radio>
  <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
  </n-space>
  </n-radio-group>
  </n-form-item>

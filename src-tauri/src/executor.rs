@@ -313,7 +313,7 @@ mod tests {
  decrypt.key_ref = Some("input:key".to_string());
  decrypt.key_format = "text".to_string();
  decrypt.input_format = "base64".to_string();
- decrypt.output_format = "hex".to_string();
+ decrypt.output_format = "utf-8".to_string();
  decrypt.mode = Some("ECB".to_string());
  decrypt.padding = Some("PKCS5Padding".to_string());
 
@@ -348,7 +348,7 @@ mod tests {
  decrypt.key_ref = Some("input:key".to_string());
  decrypt.key_format = "text".to_string();
  decrypt.input_format = "base64".to_string();
- decrypt.output_format = "hex".to_string();
+ decrypt.output_format = "utf-8".to_string();
  decrypt.mode = Some("ECB".to_string());
  decrypt.padding = Some("pkcs7".to_string());
 
@@ -449,6 +449,7 @@ mod tests {
  decrypt.operation = "decrypt".to_string();
  decrypt.padding = Some("OAEP".to_string());
  decrypt.input_format = "base64".to_string();
+ decrypt.output_format = "utf-8".to_string();
  decrypt.private_key_ref = Some("input:private-key".to_string());
 
  let results = execute_batch(BatchExecutionRequest {
@@ -479,6 +480,7 @@ mod tests {
  decrypt.operation = "decrypt".to_string();
  decrypt.mode = Some("C1C3C2".to_string());
  decrypt.input_format = "base64".to_string();
+ decrypt.output_format = "utf-8".to_string();
  decrypt.private_key_ref = Some("input:private-key".to_string());
 
  let results = execute_batch(BatchExecutionRequest {
@@ -641,6 +643,6 @@ mod tests {
  assert_eq!(results.len(), 2);
  assert!(results.iter().all(|result| result.status == "success"));
  assert_eq!(results[0].result, "A336A3C7E458F6AE21741B136F0945A2");
- assert_eq!(results[1].result, "中文ABC");
+ assert_eq!(results[1].result, "5Lit5paHQUJD");
  }
 }

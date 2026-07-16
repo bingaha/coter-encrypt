@@ -209,7 +209,7 @@ pub fn process_sm2(
  };
 
  let encrypted = sm2_encrypt(&public_key, mode, &data_bytes)?;
- Ok(encode_output_bytes(&encrypted, output_format, hex_case))
+ encode_crypto_output(&encrypted, output_format, hex_case, "SM2加密结果")
  }
  "decrypt" => {
  if data.is_empty() {
@@ -228,8 +228,7 @@ pub fn process_sm2(
  let decrypted = private_key
  .decrypt(&data_bytes)
  .map_err(|error| format!("SM2解密失败: {error}"))?;
- String::from_utf8(decrypted)
- .map_err(|error| format!("SM2解密结果不是有效UTF-8: {error}"))
+ encode_crypto_output(&decrypted, output_format, hex_case, "SM2解密结果")
  }
  _ => Err(format!("不支持的SM2操作: {operation}")),
  }
@@ -277,7 +276,7 @@ pub fn process_aes(
  };
 
  let encrypted = aes_encrypt(&key_bytes, &iv_bytes, mode, padding, &data_bytes)?;
- Ok(encode_output_bytes(&encrypted, output_format, hex_case))
+ encode_crypto_output(&encrypted, output_format, hex_case, "AES加密结果")
  }
  "decrypt" | "decode" => {
  if data.is_empty() {
@@ -290,8 +289,7 @@ pub fn process_aes(
  }
 
  let decrypted = aes_decrypt(&key_bytes, &iv_bytes, mode, padding, &data_bytes)?;
- String::from_utf8(decrypted)
- .map_err(|error| format!("AES解密结果不是有效UTF-8: {error}"))
+ encode_crypto_output(&decrypted, output_format, hex_case, "AES解密结果")
  }
  _ => Err(format!("不支持的AES操作: {operation}")),
  }
@@ -341,7 +339,7 @@ pub fn process_blowfish(
  };
 
  let encrypted = blowfish_encrypt(&key_bytes, &iv_bytes, mode, padding, &data_bytes)?;
- Ok(encode_output_bytes(&encrypted, output_format, hex_case))
+ encode_crypto_output(&encrypted, output_format, hex_case, "Blowfish加密结果")
  }
  "decrypt" | "decode" => {
  if data.is_empty() {
@@ -354,8 +352,7 @@ pub fn process_blowfish(
  }
 
  let decrypted = blowfish_decrypt(&key_bytes, &iv_bytes, mode, padding, &data_bytes)?;
- String::from_utf8(decrypted)
- .map_err(|error| format!("Blowfish解密结果不是有效UTF-8: {error}"))
+ encode_crypto_output(&decrypted, output_format, hex_case, "Blowfish解密结果")
  }
  _ => Err(format!("不支持的Blowfish操作: {operation}")),
  }
@@ -395,7 +392,7 @@ pub fn process_sm4(
  match normalize_operation(operation).as_str() {
  "encrypt" | "encode" => {
  let encrypted = sm4_encrypt(&key_bytes, &iv_bytes, mode, padding, data.as_bytes())?;
- Ok(encode_output_bytes(&encrypted, output_format, hex_case))
+ encode_crypto_output(&encrypted, output_format, hex_case, "SM4加密结果")
  }
  "decrypt" | "decode" => {
  if data.is_empty() {
@@ -408,8 +405,7 @@ pub fn process_sm4(
  }
 
  let decrypted = sm4_decrypt(&key_bytes, &iv_bytes, mode, padding, &data_bytes)?;
- String::from_utf8(decrypted)
- .map_err(|error| format!("SM4解密结果不是有效UTF-8: {error}"))
+ encode_crypto_output(&decrypted, output_format, hex_case, "SM4解密结果")
  }
  _ => Err(format!("不支持的SM4操作: {operation}")),
  }
@@ -437,7 +433,7 @@ pub fn process_rsa(
  } else {
  rsa_pkcs1_encrypt(&public_key, data.as_bytes())?
  };
- Ok(encode_output_bytes(&encrypted, output_format, hex_case))
+ encode_crypto_output(&encrypted, output_format, hex_case, "RSA加密结果")
  }
  "decrypt" => {
  if data.is_empty() {
@@ -452,7 +448,7 @@ pub fn process_rsa(
  if is_rsa_pkcs1_signature(padding) {
  let signed = rsa_pkcs1_sha1_digest_signature(&private_key, data, input_format)
  .map_err(|error| format!("RSA签名失败: {error}"))?;
- return Ok(encode_output_bytes(&signed, output_format, hex_case));
+ return encode_crypto_output(&signed, output_format, hex_case, "RSA签名结果");
  }
 
  let data_bytes = decode_input_bytes(data, input_format)?;
@@ -465,8 +461,7 @@ pub fn process_rsa(
  } else {
  rsa_pkcs1_decrypt(&private_key, &data_bytes)?
  };
- String::from_utf8(decrypted)
- .map_err(|error| format!("RSA解密结果不是有效UTF-8: {error}"))
+ encode_crypto_output(&decrypted, output_format, hex_case, "RSA解密结果")
  }
  _ => Err(format!("不支持的RSA操作: {operation}")),
  }
@@ -484,14 +479,35 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
  output
 }
 
-fn encode_output_bytes(data: &[u8], output_format: &str, hex_case: &str) -> String {
- if output_format.trim().is_empty() || output_format.eq_ignore_ascii_case("hex") {
- return apply_hex_case(bytes_to_hex(data), hex_case);
+fn normalize_output_format(output_format: &str) -> String {
+ match output_format.trim().to_ascii_lowercase().as_str() {
+ "" | "hex" => "hex".to_string(),
+ "base64" => "base64".to_string(),
+ "text" | "utf8" | "utf-8" => "utf-8".to_string(),
+ "gbk" | "gb2312" => "gbk".to_string(),
+ other => other.to_string(),
  }
+}
 
- match output_format.to_ascii_lowercase().as_str() {
- "base64" => STANDARD.encode(data),
- _ => apply_hex_case(bytes_to_hex(data), hex_case),
+fn encode_crypto_output(
+ data: &[u8],
+ output_format: &str,
+ hex_case: &str,
+ error_prefix: &str,
+) -> Result<String, String> {
+ match normalize_output_format(output_format).as_str() {
+ "hex" => Ok(apply_hex_case(bytes_to_hex(data), hex_case)),
+ "base64" => Ok(STANDARD.encode(data)),
+ "utf-8" => String::from_utf8(data.to_vec())
+ .map_err(|error| format!("{error_prefix}不是有效UTF-8: {error}")),
+ "gbk" => {
+ let (decoded, _, had_errors) = GBK.decode(data);
+ if had_errors {
+ return Err(format!("{error_prefix}不是有效GBK"));
+ }
+ Ok(decoded.into_owned())
+ }
+ other => Err(format!("不支持的输出格式: {other}")),
  }
 }
 
@@ -1923,7 +1939,7 @@ mod tests {
  Some(SM2_PRIVATE_D),
  Some("C1C3C2"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  SM2_GOLDEN_C1C3C2_CIPHER_HEX,
  "decrypt",
@@ -1955,7 +1971,7 @@ mod tests {
  Some(SM2_PRIVATE_D),
  Some("C1C3C2"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  &encrypted,
  "decrypt",
@@ -1977,7 +1993,7 @@ mod tests {
  Some(SM2_PRIVATE_D),
  Some("C1C2C3"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  &c1c2c3,
  "decrypt",
@@ -2007,7 +2023,7 @@ mod tests {
  Some(SM2_PRIVATE_D),
  Some("C1C3C2"),
  "base64",
- "hex",
+ "utf-8",
  "uppercase",
  &encrypted,
  "decrypt",
@@ -2037,7 +2053,7 @@ mod tests {
  None,
  Some("C1C3C2"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  SM2_GOLDEN_C1C3C2_CIPHER_HEX,
  "decrypt",
@@ -2129,7 +2145,7 @@ mod tests {
  Some("ECB"),
  Some("PKCS5Padding"),
  "base64",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2203,7 +2219,7 @@ mod tests {
  Some("CBC"),
  Some("PKCS5Padding"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2240,7 +2256,7 @@ mod tests {
  Some("ECB"),
  Some("NoPadding"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2339,7 +2355,7 @@ mod tests {
  Some("ECB"),
  Some("PKCS5Padding"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2394,7 +2410,7 @@ mod tests {
  Some("ECB"),
  Some("PKCS5Padding"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "hex",
  "uppercase",
@@ -2403,6 +2419,116 @@ mod tests {
  )
  .unwrap(),
  "hello"
+ );
+ }
+
+ #[test]
+ fn blowfish_decrypt_binary_plaintext_supports_hex_and_base64_output() {
+ // 明文是非 UTF-8 二进制；输出应按字节编码，而不是先强制 UTF-8
+ let plain_hex = "00000000000319CC";
+ let encrypted = process_blowfish(
+ Some("FZvIAvgfQRfKKzFjHi_hndypTFCSWVRl"),
+ Some("0000000000000000"),
+ Some("CBC"),
+ Some("None"),
+ "hex",
+ "base64",
+ "text",
+ "hex",
+ "uppercase",
+ plain_hex,
+ "encrypt",
+ )
+ .unwrap();
+
+ assert_eq!(encrypted, "DQ8foMjgxwQ=");
+ assert_eq!(
+ process_blowfish(
+ Some("FZvIAvgfQRfKKzFjHi_hndypTFCSWVRl"),
+ Some("0000000000000000"),
+ Some("CBC"),
+ Some("None"),
+ "base64",
+ "hex",
+ "text",
+ "hex",
+ "uppercase",
+ &encrypted,
+ "decrypt",
+ )
+ .unwrap(),
+ plain_hex
+ );
+ assert_eq!(
+ process_blowfish(
+ Some("FZvIAvgfQRfKKzFjHi_hndypTFCSWVRl"),
+ Some("0000000000000000"),
+ Some("CBC"),
+ Some("None"),
+ "base64",
+ "base64",
+ "text",
+ "hex",
+ "uppercase",
+ &encrypted,
+ "decrypt",
+ )
+ .unwrap(),
+ "AAAAAAADGcw="
+ );
+ assert!(
+ process_blowfish(
+ Some("FZvIAvgfQRfKKzFjHi_hndypTFCSWVRl"),
+ Some("0000000000000000"),
+ Some("CBC"),
+ Some("None"),
+ "base64",
+ "utf-8",
+ "text",
+ "hex",
+ "uppercase",
+ &encrypted,
+ "decrypt",
+ )
+ .unwrap_err()
+ .contains("不是有效UTF-8")
+ );
+ }
+
+ #[test]
+ fn blowfish_decrypt_supports_gbk_output() {
+ // "中文" GBK bytes: D6 D0 CE C4
+ let encrypted = process_blowfish(
+ Some("test-key"),
+ None,
+ Some("ECB"),
+ Some("PKCS5Padding"),
+ "hex",
+ "hex",
+ "text",
+ "hex",
+ "uppercase",
+ "D6D0CEC4",
+ "encrypt",
+ )
+ .unwrap();
+
+ assert_eq!(
+ process_blowfish(
+ Some("test-key"),
+ None,
+ Some("ECB"),
+ Some("PKCS5Padding"),
+ "hex",
+ "gbk",
+ "text",
+ "hex",
+ "uppercase",
+ &encrypted,
+ "decrypt",
+ )
+ .unwrap(),
+ "中文"
  );
  }
 
@@ -2498,7 +2624,7 @@ mod tests {
  Some("ECB"),
  Some("pkcs7"),
  "base64",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2550,7 +2676,7 @@ mod tests {
  Some("CBC"),
  Some("pkcs7"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2586,7 +2712,7 @@ mod tests {
  Some("ECB"),
  Some("zero"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2619,7 +2745,7 @@ mod tests {
  Some("ECB"),
  Some("none"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2687,7 +2813,7 @@ mod tests {
  Some("ECB"),
  Some("pkcs7"),
  "hex",
- "hex",
+ "utf-8",
  "text",
  "text",
  "uppercase",
@@ -2738,7 +2864,7 @@ mod tests {
  Some(PROJECT_RSA_PRIVATE_KEY),
  Some("PKCS1"),
  "base64",
- "hex",
+ "utf-8",
  "uppercase",
  &encrypted,
  "decrypt",
@@ -2767,7 +2893,7 @@ mod tests {
  Some(PROJECT_RSA_PRIVATE_KEY),
  Some("PKCS1"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  &encrypted,
  "decrypt",
@@ -2797,7 +2923,7 @@ mod tests {
  Some(PROJECT_RSA_PRIVATE_KEY),
  Some("OAEP"),
  "base64",
- "hex",
+ "utf-8",
  "uppercase",
  &encrypted,
  "decrypt",
@@ -2827,7 +2953,7 @@ mod tests {
  None,
  Some("PKCS1"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  "abc",
  "decrypt",
@@ -2840,7 +2966,7 @@ mod tests {
  Some(PROJECT_RSA_PRIVATE_KEY),
  Some("PKCS1"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  "abc",
  "decrypt",
@@ -2853,7 +2979,7 @@ mod tests {
  Some(PROJECT_RSA_PRIVATE_KEY),
  Some("OAEP"),
  "hex",
- "hex",
+ "utf-8",
  "uppercase",
  "abc",
  "decrypt",
