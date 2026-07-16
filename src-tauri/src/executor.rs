@@ -606,7 +606,7 @@ mod tests {
  #[test]
  fn actual_anhui_sso_project_chain_matches_golden_output() {
  let request = batch_from_project_config(
- include_str!("../../projects/安徽SSO.json"),
+ include_str!("../tests/fixtures/projects/安徽SSO.json"),
  HashMap::from([("input-1773973650210".to_string(), "abc".to_string())]),
  );
 
@@ -631,7 +631,7 @@ mod tests {
  #[test]
  fn actual_linyi_sm4_project_chain_matches_golden_output() {
  let request = batch_from_project_config(
- include_str!("../../projects/临沂加密.json"),
+ include_str!("../tests/fixtures/projects/临沂加密.json"),
  HashMap::from([(
  "input-1770197520573".to_string(),
  "QTMzNkEzQzdFNDU4RjZBRTIxNzQxQjEzNkYwOTQ1QTI=".to_string(),

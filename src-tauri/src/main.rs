@@ -8,7 +8,6 @@ mod har;
 mod oss_transfer;
 mod project_store;
 
-use coter_core::removed_module::{Request, Response};
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -55,12 +54,6 @@ fn rename_project(id: u64, new_name: String) -> Result<Option<project_store::Pro
  project_store::rename_project(id, new_name)
 }
 
-#[tauri::command]
-fn removed_command(
- payload: Request,
-) -> Result<Response, String> {
- coter_core::removed_module::removed_command(payload)
-}
 
 #[tauri::command]
 fn execute_batch(request: executor::BatchExecutionRequest) -> Vec<executor::EncryptionResponse> {
@@ -154,55 +147,6 @@ async fn open_default_browser_with_cookies(
  browser_bridge::open_default_browser_with_cookies(app, request).await
 }
 
-#[cfg(test)]
-mod tests {
- use serde_json::json;
-
- use super::{removed_command, Request};
-
- #[test]
- fn removed_command_command_returns_frontend_shape() {
- let response = removed_command(Request {
- project_name: "项目A".to_string(),
- config: json!({
- "inputMappings": [
- {
- "id": "input-1",
- "name": "原文",
- "inputRef": "plain",
- "defaultValue": "abc"
- }
- ],
- "components": [
- {
- "id": "component-1",
- "type": "BASE64",
- "outputRef": "out",
- "config": {
- "inputSourceType": "inputMapping",
- "inputMappingRef": "plain",
- "operation": "encode"
- }
- }
- ],
- "outputMappings": [
- {
- "id": "output-1",
- "name": "result",
- "componentRef": "out"
- }
- ]
- }),
- })
- .unwrap();
-
- assert_eq!(response.project_name, "项目A");
- assert!(response
- .code
- .contains("String result = CryptoUtil.processBase64(plain, \"encode\");"));
- }
-}
-
 #[tauri::command]
 async fn transfer_oss_key(
  oss_key: String,
@@ -249,7 +193,6 @@ fn main() {
  update_project,
  delete_project,
  rename_project,
- removed_command,
  execute_batch,
  process_har,
  open_external_url,

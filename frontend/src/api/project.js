@@ -63,11 +63,3 @@ export const renameProject = (id, newName) => {
  return invokeApi('rename_project', { id, newName })
 }
 
-/**
- * 根据当前工作流配置生成 代码
- * @param {Object} payload - 生成参数
- * @returns {Promise} 代码结果
- */
-export const removedGenerateCode = (payload) => {
- return invokeApi('removed_command', { payload })
-}

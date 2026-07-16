@@ -25,7 +25,7 @@
 - 新功能只走 Rust/Tauri 本地命令。
 - 不新增 后端能力。
 - 不新增业务 HTTP API。
-- 不把旧 或 HTTP 服务作为运行时 fallback。
+- 不把旧 HTTP 服务作为运行时 fallback。
 - 浏览器 Cookie 写入必须由本地安装的浏览器插件完成。
 - 插件不走插件商店，通过本地解压目录或 zip 解压后安装。
 - 插件目录固定放在仓库根目录 `browser-extension/`。
@@ -202,7 +202,7 @@ chrome-extension://<插件ID>/bridge.html?port=...&token=...
 
 ### 开发任务
 
-1. [已完成] 新增加解密工具“进制转换”组件，走 Rust/Tauri 本地执行链路，不新增 或 HTTP 兜底。
+1. [已完成] 新增加解密工具“进制转换”组件，走 Rust/Tauri 本地执行链路，不新增 HTTP 兜底。
 
 ### 验证记录
 

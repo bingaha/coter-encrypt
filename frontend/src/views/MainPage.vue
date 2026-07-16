@@ -4,19 +4,14 @@ import { useMessage, useDialog } from 'naive-ui'
 import { MainLayout, AppHeader } from '@/components/layout'
 import { ComponentLibrary, WorkflowConfig } from '@/components/config'
 import { ExecutePanel } from '@/components/execute'
-import { RemovedPreviewModal, ProjectDrawer } from '@/components/project'
+import { ProjectDrawer } from '@/components/project'
 import { useConfigStore } from '@/store'
 import { useProjectManager } from '@/composables/useProjectManager'
-import { removedGenerateCode } from '@/api/project'
 
 // Store
 const configStore = useConfigStore()
 const message = useMessage()
 const dialog = useDialog()
-const removedCodeVisible = ref(false)
-const removedGeneratedCode = ref('')
-const removedGeneratedProjectName = ref('未命名项目')
-const removedGenerating = ref(false)
 
 // 项目管理
 const {
@@ -64,32 +59,6 @@ const onSaveAs = async () => {
  await handleSaveAs()
 }
 
-// 生成 代码
-const onRemovedGenerate = async () => {
- const config = configStore.getConfigData()
- if (!config.components || config.components.length === 0) {
- message.warning('请先配置至少一个组件')
- return
- }
-
- removedGenerating.value = true
- try {
- const projectName = currentProject.value?.name || '未命名项目'
- const response = await removedGenerateCode({
- projectName,
- config
- })
-
- removedGeneratedProjectName.value = response.data?.projectName || projectName
- removedGeneratedCode.value = response.data?.code || ''
- removedCodeVisible.value = true
- } catch (error) {
- const errorMessage = error?.response?.data?.message || error?.message || '未知错误'
- message.error('生成 代码失败: ' + errorMessage)
- } finally {
- removedGenerating.value = false
- }
-}
 
 // 处理导出
 const onExport = () => {
@@ -136,20 +105,6 @@ const onRefreshProjects = async () => {
  await fetchProjects()
 }
 
-// 复制生成的 代码
-const onCopyRemovedGenerated = async () => {
- if (!removedGeneratedCode.value) {
- message.warning('暂无可复制的代码')
- return
- }
-
- try {
- await navigator.clipboard.writeText(removedGeneratedCode.value)
- message.success(' 代码已复制到剪贴板')
- } catch (error) {
- message.error('复制失败')
- }
-}
 </script>
 
 <template>
@@ -159,11 +114,9 @@ const onCopyRemovedGenerated = async () => {
  <AppHeader
  :projects="projects"
  :loading="isLoading"
- :generating-="removedGenerating"
  @new="onNew"
  @save="onSave"
  @save-as="onSaveAs"
- @generate-="onRemovedGenerate"
  @export="onExport"
  @import="onImport"
  @open-project-drawer="onOpenProjectDrawer"
@@ -199,13 +152,6 @@ const onCopyRemovedGenerated = async () => {
  @delete="onDeleteProject"
  @rename="onRenameProject"
  @refresh="onRefreshProjects"
- />
-
- <RemovedPreviewModal
- v-model:visible="removedCodeVisible"
- :project-name="removedGeneratedProjectName"
- :code="removedGeneratedCode"
- @copy="onCopyRemovedGenerated"
  />
 </template>
 

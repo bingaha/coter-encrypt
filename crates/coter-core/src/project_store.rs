@@ -378,7 +378,7 @@ mod tests {
  }
 
  #[test]
- fn crc32_project_id_matches_expected_unsigned_int() {
+ fn crc32_project_id_matches_unsigned_int() {
  assert_eq!(id_from_name("安徽SSO"), 730_391_273);
  assert_eq!(id_from_name("临沂加密"), 3_803_985_762);
  }

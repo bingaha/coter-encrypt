@@ -13,7 +13,6 @@ import {
  AppsOutline,
  SaveOutline,
  CopyOutline,
- CodeSlashOutline,
  FolderOpenOutline,
  SunnyOutline,
  MoonOutline,
@@ -28,7 +27,6 @@ import { useConfigStore } from '../../store'
 const props = defineProps({
  projects: { type: Array, default: () => [] },
  loading: { type: Boolean, default: false },
- removedGenerating: { type: Boolean, default: false }
 })
 
 // Emits
@@ -36,7 +34,6 @@ const emit = defineEmits([
  'new',
  'save',
  'saveAs',
- 'removedGenerate',
  'export',
  'import',
  'openProjectDrawer',
@@ -96,10 +93,6 @@ const handleSaveAs = () => {
  emit('saveAs')
 }
 
-// 处理生成 代码
-const handleRemovedGenerate = () => {
- emit('removedGenerate')
-}
 
 // 处理导出
 const handleExport = () => {
@@ -232,24 +225,6 @@ const handleToggleTheme = () => {
  </n-button>
  </template>
  保存为新项目
- </n-tooltip>
-
- <!-- 生成 代码按钮 -->
- <n-tooltip trigger="hover">
- <template #trigger>
- <n-button
- secondary
- size="small"
- :loading="removedGenerating"
- @click="handleRemovedGenerate"
- >
- <template #icon>
- <n-icon><CodeSlashOutline /></n-icon>
- </template>
- 已移除的代码生成
- </n-button>
- </template>
- 生成当前工作流对应的 代码
  </n-tooltip>
 
  <n-divider vertical />

@@ -1740,10 +1740,10 @@ mod tests {
  const PROJECT_RSA_PUBLIC_KEY_FROM_PRIVATE: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCSn/KAmNtW4UZ8fJ5XQ9nr41uvSuDq2xrhtxVB/2/qq4cPealAR42jSB+UAfZDuBx7DwMYVebJxmlx0np7lwsWRQVnuVhvXHVu3SP+2IYTxjmNJdMsI4jHucB4W8nKSEZn28gn1raVN+irTL/be+aUEyo23CY0LTzrUPr+TnowVQIDAQAB";
  const SM2_PRIVATE_D: &str = "9998894D66977D5F2C68B7E0564DFBFB36EE5AFD5520F7FDA1AF6E7D6ACAA874";
  const SM2_PUBLIC_Q: &str = "049031694836FCCD075D20CC284278901F37AF7D1EF8DEA025393C4643CE577C9DB64DF3E331ECC5B105E40E6C65949B6B5F6E8F1D99D28B6E01539DAE723588F0";
- const SM2_GOLDEN_C1C3C2_CIPHER_HEX: &str = "042B2354EAF69D675491C0C0294E06C69D6A68669F1A8B2FC661EACB5B1B16D8E52AFC1F89D3C255094AD8E2ED4C62E6DD47DF4550128B606B93465D2E72EB245F2BD5DA2AB31132EED6AE0C1597747B6098831AB0F269DA7AA4884E2AD8039FD6CB7C40FC5BD131E55C";
+ const SM2_C1C3C2_GOLDEN_CIPHER_HEX: &str = "042B2354EAF69D675491C0C0294E06C69D6A68669F1A8B2FC661EACB5B1B16D8E52AFC1F89D3C255094AD8E2ED4C62E6DD47DF4550128B606B93465D2E72EB245F2BD5DA2AB31132EED6AE0C1597747B6098831AB0F269DA7AA4884E2AD8039FD6CB7C40FC5BD131E55C";
 
  #[test]
- fn base64_encode_decode_matches_expected_behavior() {
+ fn base64_encode_decode_matches_expected_vectors() {
  let encoded = process_base64("中文ABC", "encode").unwrap();
  assert_eq!(encoded, "5Lit5paHQUJD");
  assert_eq!(process_base64(&encoded, "decode").unwrap(), "中文ABC");
@@ -1751,7 +1751,7 @@ mod tests {
  }
 
  #[test]
- fn hex_encode_decode_matches_expected_behavior() {
+ fn hex_encode_decode_matches_expected_vectors() {
  assert_eq!(
  process_hex("中文ABC", "encode").unwrap(),
  "e4b8ade69687414243"
@@ -1805,7 +1805,7 @@ mod tests {
  }
 
  #[test]
- fn url_encode_decode_utf8_matches_expected_url_encoder_behavior() {
+ fn url_encode_decode_utf8_matches_url_encoder_vectors() {
  let encoded = process_url("a b中文", "UTF-8", "encode").unwrap();
  assert_eq!(encoded, "a+b%E4%B8%AD%E6%96%87");
  assert_eq!(process_url(&encoded, "UTF-8", "decode").unwrap(), "a b中文");
@@ -1842,7 +1842,7 @@ mod tests {
  }
 
  #[test]
- fn unicode_encode_matches_expected_utf16_code_unit_behavior() {
+ fn unicode_encode_matches_utf16_code_unit_vectors() {
  assert_eq!(
  process_unicode("ABC中文", "standard", "encode").unwrap(),
  r"ABC\u4E2D\u6587"
@@ -1878,7 +1878,7 @@ mod tests {
  }
 
  #[test]
- fn md5_matches_expected_behavior() {
+ fn md5_matches_expected_vectors() {
  assert_eq!(
  process_md5("abc", Some(32), "lowercase").unwrap(),
  "900150983cd24fb0d6963f7d28e17f72"
@@ -1894,7 +1894,7 @@ mod tests {
  }
 
  #[test]
- fn sha_matches_expected_behavior() {
+ fn sha_matches_expected_vectors() {
  assert_eq!(
  process_sha("abc", Some("SHA1"), "lowercase").unwrap(),
  "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -1917,7 +1917,7 @@ mod tests {
  }
 
  #[test]
- fn sm3_matches_expected_behavior() {
+ fn sm3_matches_expected_vectors() {
  assert_eq!(
  process_sm3("abc", "lowercase").unwrap(),
  "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
@@ -1933,7 +1933,7 @@ mod tests {
  }
 
  #[test]
- fn sm2_decrypts_hutool_c1c3c2_golden_ciphertext() {
+ fn sm2_decrypts_reference_c1c3c2_golden_ciphertext() {
  let decrypted = process_sm2(
  None,
  Some(SM2_PRIVATE_D),
@@ -1941,7 +1941,7 @@ mod tests {
  "hex",
  "utf-8",
  "uppercase",
- SM2_GOLDEN_C1C3C2_CIPHER_HEX,
+ SM2_C1C3C2_GOLDEN_CIPHER_HEX,
  "decrypt",
  )
  .unwrap();
@@ -1963,7 +1963,7 @@ mod tests {
  )
  .unwrap();
 
- assert_eq!(encrypted.len(), SM2_GOLDEN_C1C3C2_CIPHER_HEX.len());
+ assert_eq!(encrypted.len(), SM2_C1C3C2_GOLDEN_CIPHER_HEX.len());
  assert!(encrypted.starts_with("04"));
 
  let decrypted = process_sm2(
@@ -1983,9 +1983,9 @@ mod tests {
 
  #[test]
  fn sm2_supports_c1c2c3_ciphertext_order() {
- let c1 = &SM2_GOLDEN_C1C3C2_CIPHER_HEX[..130];
- let c3 = &SM2_GOLDEN_C1C3C2_CIPHER_HEX[130..194];
- let c2 = &SM2_GOLDEN_C1C3C2_CIPHER_HEX[194..];
+ let c1 = &SM2_C1C3C2_GOLDEN_CIPHER_HEX[..130];
+ let c3 = &SM2_C1C3C2_GOLDEN_CIPHER_HEX[130..194];
+ let c2 = &SM2_C1C3C2_GOLDEN_CIPHER_HEX[194..];
  let c1c2c3 = format!("{c1}{c2}{c3}");
 
  let decrypted = process_sm2(
@@ -2055,7 +2055,7 @@ mod tests {
  "hex",
  "utf-8",
  "uppercase",
- SM2_GOLDEN_C1C3C2_CIPHER_HEX,
+ SM2_C1C3C2_GOLDEN_CIPHER_HEX,
  "decrypt",
  )
  .unwrap_err()
@@ -2076,7 +2076,7 @@ mod tests {
  }
 
  #[test]
- fn hmac_sha_matches_expected_behavior() {
+ fn hmac_sha_matches_expected_vectors() {
  assert_eq!(
  process_hmac_sha("abc", Some("key"), Some("HmacSHA1"), "lowercase").unwrap(),
  "4fd0b215276ef12f2b3e4c8ecac2811498b656fc"
@@ -2106,7 +2106,7 @@ mod tests {
  }
 
  #[test]
- fn hmac_md5_matches_expected_behavior() {
+ fn hmac_md5_matches_expected_vectors() {
  assert_eq!(
  process_hmac_md5("abc", Some("key"), Some(32), "lowercase").unwrap(),
  "d2fe98063f876b03193afb49b4979591"
@@ -2121,7 +2121,7 @@ mod tests {
  }
 
  #[test]
- fn aes_ecb_pkcs5_text_to_base64_matches_expected_behavior() {
+ fn aes_ecb_pkcs5_text_to_base64_matches_expected_vectors() {
  let encrypted = process_aes(
  Some("d3k7s8c4n2m1s5b9"),
  None,
@@ -2600,7 +2600,7 @@ mod tests {
  }
 
  #[test]
- fn sm4_ecb_pkcs7_text_to_base64_matches_expected_behavior() {
+ fn sm4_ecb_pkcs7_text_to_base64_matches_expected_vectors() {
  let encrypted = process_sm4(
  Some("Li8CW5HpIDSwMKog"),
  None,
@@ -2825,7 +2825,7 @@ mod tests {
  }
 
  #[test]
- fn rsa_pkcs1_signature_matches_expected_behavior_for_project_key() {
+ fn rsa_pkcs1_signature_matches_expected_vectors_for_project_key() {
  let signed = process_rsa(
  None,
  Some(PROJECT_RSA_PRIVATE_KEY),
