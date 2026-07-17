@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted } from 'vue'
+import { computed, inject, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
  NButton,
@@ -19,11 +19,14 @@ import {
  ReceiptOutline,
  SearchOutline,
  ServerOutline,
- SwapHorizontalOutline
+ SwapHorizontalOutline,
+ GitNetworkOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
 import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
+import { listen } from '@tauri-apps/api/event'
+import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -85,8 +88,39 @@ const toolEntries = [
  status: '可用',
  description: '在生产环境与测试环境之间同步 OSS 文件，自动下载并重新上传。',
  capabilities: ['生产↔测试', '自动下载上传', '一键复制']
+ },
+ {
+ id: 'pipeline-monitor',
+ title: '流水线监控',
+ routeName: 'PipelineMonitorTool',
+ icon: GitNetworkOutline,
+ status: '可用',
+ description: '监控云效流水线人工卡点与分支选择，支持自动审批与后台轮询。',
+ capabilities: ['多流水线', '人工卡点', '自动模式']
  }
 ]
+
+const pipelinePendingCount = ref(0)
+const pipelineMonitorMode = ref('idle')
+let unlistenPipeline = null
+let pipelinePollTimer = null
+
+const pipelineStatusLabel = computed(() => {
+  if (pipelineMonitorMode.value === 'loop') return '循环监控'
+  if (pipelineMonitorMode.value === 'single') return '单次监控'
+  if (pipelinePendingCount.value > 0) return `待办 ${pipelinePendingCount.value}`
+  return '可用'
+})
+
+const refreshPipelineBadge = async () => {
+  try {
+    const { data } = await getPipelineMonitorSnapshot()
+    pipelinePendingCount.value = data?.pendingCount || 0
+    pipelineMonitorMode.value = data?.mode || (data?.running ? 'loop' : 'idle')
+  } catch {
+    // ignore
+  }
+}
 
 const openTool = (tool) => {
  router.push({ name: tool.routeName })
@@ -109,6 +143,22 @@ onMounted(async () => {
  if (loaded) {
  checkConnection()
  }
+ await refreshPipelineBadge()
+ try {
+ unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
+ pipelinePendingCount.value = event.payload?.pendingCount || 0
+ pipelineMonitorMode.value =
+ event.payload?.mode || (event.payload?.running ? 'loop' : 'idle')
+ })
+ } catch {
+ // ignore
+ }
+ pipelinePollTimer = setInterval(refreshPipelineBadge, 5000)
+})
+
+onBeforeUnmount(() => {
+ if (unlistenPipeline) unlistenPipeline()
+ if (pipelinePollTimer) clearInterval(pipelinePollTimer)
 })
 </script>
 
@@ -194,7 +244,21 @@ onMounted(async () => {
  <component :is="tool.icon" />
  </n-icon>
  </div>
- <span class="tool-status">{{ tool.status }}</span>
+ <span
+ class="tool-status"
+ :class="{
+ 'is-running':
+ tool.id === 'pipeline-monitor' &&
+ (pipelineMonitorMode === 'loop' || pipelineMonitorMode === 'single')
+ }"
+ >
+ <template v-if="tool.id === 'pipeline-monitor'">
+ {{ pipelineStatusLabel }}
+ </template>
+ <template v-else>
+ {{ tool.status }}
+ </template>
+ </span>
  </div>
 
  <div class="tool-card-main">
@@ -355,6 +419,11 @@ onMounted(async () => {
  font-size: 12px;
  color: var(--n-primary-color, #18a058);
  background-color: rgba(24, 160, 88, 0.12);
+}
+
+.tool-status.is-running {
+ color: #d03050;
+ background-color: rgba(208, 48, 80, 0.12);
 }
 
 .tool-card-main {

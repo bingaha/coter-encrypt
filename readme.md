@@ -30,7 +30,7 @@
 
 1. **工具台首页与路由**
    - 默认路由 `/` 为工具台首页
-   - 提供「加解密工具」「日志语句生成」「在线凭证查询」「任务反馈生成」等入口
+   - 提供「加解密工具」「日志语句生成」「在线凭证查询」「任务反馈生成」「OSS Key 转换」「流水线监控」等入口
    - `/encrypt` 二级页面可返回首页
    - 页面切换在同一 Tauri 窗口内完成
 
@@ -56,6 +56,10 @@
 
 7. **主题**
    - 亮色/暗色切换，偏好自动保存
+
+8. **流水线监控**
+   - 监控云效流水线人工卡点与分支选择
+   - 支持自动模式、配置热更新、后台轮询与待办通知
 
 ## 技术栈
 
@@ -89,7 +93,7 @@ npm run tauri:build
 
 ```text
 target/release/CoterEncrypt.exe
-target/release/bundle/nsis/CoterEncrypt_0.1.9_x64-setup.exe
+target/release/bundle/nsis/CoterEncrypt_0.1.10_x64-setup.exe
 ```
 
 - `CoterEncrypt.exe`：便携/内测运行
