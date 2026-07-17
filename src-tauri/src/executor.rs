@@ -8,7 +8,12 @@ pub fn execute_batch(request: BatchExecutionRequest) -> Vec<EncryptionResponse> 
 
 fn process_algorithm(request: &EncryptionRequest) -> Result<String, String> {
  match request.algorithm.to_uppercase().as_str() {
- "BASE64" => crypto::process_base64(&request.data, &request.operation),
+ "BASE64" => crypto::process_base64(
+            &request.data,
+            &request.operation,
+            &request.output_format,
+            &request.hex_case,
+        ),
  "HEX" => crypto::process_hex(&request.data, &request.operation),
  "RADIX" => crypto::process_radix(
  &request.data,

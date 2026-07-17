@@ -31,16 +31,31 @@ const SHA1_DIGEST_INFO_PREFIX: [u8; 15] = [
  0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
 ];
 
-pub fn process_base64(data: &str, operation: &str) -> Result<String, String> {
+pub fn process_base64(
+    data: &str,
+    operation: &str,
+    output_format: &str,
+    hex_case: &str,
+) -> Result<String, String> {
  match normalize_operation(operation).as_str() {
- "encrypt" | "encode" => Ok(STANDARD.encode(data.as_bytes())),
+ "encrypt" | "encode" => {
+ let format = if output_format.trim().is_empty() {
+ "base64"
+ } else {
+ output_format
+ };
+ encode_crypto_output(data.as_bytes(), format, hex_case, "Base64编码结果")
+ }
  "decrypt" | "decode" => {
  let decoded = STANDARD
  .decode(data)
  .map_err(|error| format!("Base64解码失败: {error}"))?;
-
- String::from_utf8(decoded)
- .map_err(|error| format!("Base64解码结果不是有效UTF-8: {error}"))
+ let format = if output_format.trim().is_empty() {
+ "utf-8"
+ } else {
+ output_format
+ };
+ encode_crypto_output(&decoded, format, hex_case, "Base64解码结果")
  }
  _ => Err(format!("不支持的Base64操作: {operation}")),
  }
@@ -1744,14 +1759,36 @@ mod tests {
 
  #[test]
  fn base64_encode_decode_matches_expected_vectors() {
- let encoded = process_base64("中文ABC", "encode").unwrap();
- assert_eq!(encoded, "5Lit5paHQUJD");
- assert_eq!(process_base64(&encoded, "decode").unwrap(), "中文ABC");
- assert_eq!(process_base64("abc", "encrypt").unwrap(), "YWJj");
- }
+        // encode 默认/base64：对输入文本做 Base64
+        let encoded = process_base64("中文ABC", "encode", "base64", "uppercase").unwrap();
+        assert_eq!(encoded, "5Lit5paHQUJD");
+        assert_eq!(process_base64("abc", "encrypt", "base64", "uppercase").unwrap(), "YWJj");
 
- #[test]
- fn hex_encode_decode_matches_expected_vectors() {
+        // encode + hex：对输入文本字节做 HEX
+        assert_eq!(
+            process_base64("abc", "encode", "hex", "lowercase").unwrap(),
+            "616263"
+        );
+
+        // decode + utf-8
+        assert_eq!(
+            process_base64(&encoded, "decode", "utf-8", "uppercase").unwrap(),
+            "中文ABC"
+        );
+        // decode + hex
+        assert_eq!(
+            process_base64("5Lit5paHQUJD", "decode", "hex", "lowercase").unwrap(),
+            "e4b8ade69687414243"
+        );
+        // decode + base64（还原）
+        assert_eq!(
+            process_base64("5Lit5paHQUJD", "decode", "base64", "uppercase").unwrap(),
+            "5Lit5paHQUJD"
+        );
+    }
+
+    #[test]
+    fn hex_encode_decode_matches_expected_vectors() {
  assert_eq!(
  process_hex("中文ABC", "encode").unwrap(),
  "e4b8ade69687414243"

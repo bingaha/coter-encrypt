@@ -488,6 +488,8 @@ export const useConfigStore = defineStore('config', {
  return {
  ...commonInputConfig,
  operation: 'encode',
+ outputFormat: 'base64',
+ hexCase: 'uppercase',
  inputParam: '',
  outputParam: ''
  }

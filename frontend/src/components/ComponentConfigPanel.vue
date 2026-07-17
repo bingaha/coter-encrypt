@@ -203,6 +203,24 @@ watch(localConfig, (newConfig) => {
  </n-space>
  </n-radio-group>
  </n-form-item>
+ <n-form-item label="输出格式">
+ <n-radio-group v-model:value="localConfig.outputFormat">
+ <n-space>
+ <n-radio value="hex">HEX</n-radio>
+ <n-radio value="base64">BASE64</n-radio>
+ <n-radio value="utf-8">UTF-8</n-radio>
+ <n-radio value="gbk">GBK</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
+ <n-form-item v-if="localConfig.outputFormat === 'hex'" label="HEX大小写">
+ <n-radio-group v-model:value="localConfig.hexCase">
+ <n-space>
+ <n-radio value="uppercase">大写</n-radio>
+ <n-radio value="lowercase">小写</n-radio>
+ </n-space>
+ </n-radio-group>
+ </n-form-item>
  <n-form-item label="输出标识">
  <n-input :value="component.outputRef" placeholder="设置输出参数标识符" disabled />
  </n-form-item>

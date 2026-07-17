@@ -387,7 +387,9 @@ const buildBatchRequest = () => {
  mode: config.mode || null,
  padding: config.padding || null,
  inputFormat: config.inputFormat || null,
- outputFormat: config.outputFormat || null,
+ outputFormat: config.outputFormat || (comp.type === 'base64'
+          ? ((config.operation === 'decode' || config.operation === 'decrypt') ? 'utf-8' : 'base64')
+          : null),
  keyFormat: config.keyFormat || null,
  ivFormat: config.ivFormat || null,
  hexCase: config.hexCase || null,
