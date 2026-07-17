@@ -22,6 +22,9 @@ const OPENAPI_BASE: &str = "https://openapi-rdc.aliyuncs.com";
 const PIPELINE_PAGE_BASE: &str = "https://flow.aliyun.com/pipelines";
 
 const TOKEN_HINT: &str = "请先配置云效 Token";
+const ORG_HINT: &str = "请先配置组织 ID";
+const BRANCH_HINT: &str = "请先配置跟踪分支";
+const PIPELINE_LIST_HINT: &str = "请先配置流水线列表";
 const ENABLED_HINT: &str = "请至少启用一条流水线";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +493,33 @@ fn running_conflict_message(mode: MonitorMode) -> String {
         MonitorMode::Single => "单次监控运行中，请先停止".to_string(),
         MonitorMode::Idle => "监控运行中，请先停止".to_string(),
     }
+}
+
+fn validate_loop_monitor_config(config: &PipelineMonitorConfig) -> Result<(), String> {
+    if config.token.trim().is_empty() {
+        return Err(TOKEN_HINT.to_string());
+    }
+    if config.org_id.trim().is_empty() {
+        return Err(ORG_HINT.to_string());
+    }
+    if config.tracked_source_branch.trim().is_empty() {
+        return Err(BRANCH_HINT.to_string());
+    }
+    let has_pipeline = config
+        .pipelines
+        .iter()
+        .any(|item| !item.pipeline_id.trim().is_empty());
+    if !has_pipeline {
+        return Err(PIPELINE_LIST_HINT.to_string());
+    }
+    if !config
+        .pipelines
+        .iter()
+        .any(|item| item.enabled && !item.pipeline_id.trim().is_empty())
+    {
+        return Err(ENABLED_HINT.to_string());
+    }
+    Ok(())
 }
 
 fn parse_global_param_value(response_data: &Value, key: &str) -> String {
@@ -1999,12 +2029,7 @@ pub async fn start_pipeline_monitor(
     if runtime.running {
         return Err(running_conflict_message(runtime.mode));
     }
-    if runtime.config.token.trim().is_empty() {
-        return Err(TOKEN_HINT.to_string());
-    }
-    if !runtime.config.pipelines.iter().any(|p| p.enabled) {
-        return Err(ENABLED_HINT.to_string());
-    }
+    validate_loop_monitor_config(&runtime.config)?;
     sync_pipeline_states(&mut runtime);
     runtime.mode = MonitorMode::Loop;
     runtime.single_pipeline_id.clear();
@@ -2036,6 +2061,9 @@ pub async fn start_pipeline_monitor_single(
         }
         if runtime.config.token.trim().is_empty() {
             return Err(TOKEN_HINT.to_string());
+        }
+        if runtime.config.org_id.trim().is_empty() {
+            return Err(ORG_HINT.to_string());
         }
         if !runtime
             .config

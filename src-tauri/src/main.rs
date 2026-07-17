@@ -63,12 +63,18 @@ fn execute_batch(request: executor::BatchExecutionRequest) -> Vec<executor::Encr
 #[tauri::command]
 fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|error| format!("URL 格式错误: {error}"))?;
+    let domain = parsed.domain().unwrap_or_default();
+    let path = parsed.path();
     let is_allowed_url = parsed.scheme() == "https"
-        && parsed.domain() == Some("console.cloud.tencent.com")
-        && parsed.path() == "/cls/search";
+        && ((domain == "console.cloud.tencent.com" && path == "/cls/search")
+            || (domain == "account-devops.aliyun.com"
+                && matches!(
+                    path,
+                    "/settings/personalAccessToken" | "/settings/joinedOrganizations"
+                )));
 
     if !is_allowed_url {
-        return Err("只允许打开腾讯云 CLS 查询链接".to_string());
+        return Err("当前链接不在允许打开的白名单中".to_string());
     }
 
     app.opener()

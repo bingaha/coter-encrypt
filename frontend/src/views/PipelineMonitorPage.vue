@@ -31,6 +31,7 @@ import {
 } from '@vicons/ionicons5'
 import { listen } from '@tauri-apps/api/event'
 import { useConfigStore } from '@/store'
+import { invokeApi } from '@/api/tauriClient'
 import {
   loadPipelineMonitorConfig,
   savePipelineMonitorConfig,
@@ -201,7 +202,35 @@ const handleSave = async () => {
   }
 }
 
+const validateLoopMonitorConfig = () => {
+  if (!String(form.value.token || '').trim()) {
+    return '请先配置云效 Token'
+  }
+  if (!String(form.value.orgId || '').trim()) {
+    return '请先配置组织 ID'
+  }
+  if (!String(form.value.trackedSourceBranch || '').trim()) {
+    return '请先配置跟踪分支'
+  }
+  const pipelines = (form.value.pipelines || []).filter(
+    (item) => String(item.pipelineId || '').trim()
+  )
+  if (!pipelines.length) {
+    return '请先配置流水线列表'
+  }
+  if (!pipelines.some((item) => item.enabled)) {
+    return '请至少启用一条流水线'
+  }
+  return ''
+}
+
 const handleStart = async () => {
+  const validationError = validateLoopMonitorConfig()
+  if (validationError) {
+    configExpanded.value = true
+    message.error(validationError)
+    return
+  }
   try {
     await handleSave()
     const { data } = await startPipelineMonitor()
@@ -332,6 +361,17 @@ const handleClearLogs = async () => {
 
 const toggleConfigPanel = () => {
   configExpanded.value = !configExpanded.value
+}
+
+const TOKEN_HELP_URL = 'https://account-devops.aliyun.com/settings/personalAccessToken'
+const ORG_HELP_URL = 'https://account-devops.aliyun.com/settings/joinedOrganizations'
+
+const handleOpenHelpUrl = async (url) => {
+  try {
+    await invokeApi('open_external_url', { url })
+  } catch (error) {
+    message.error(error?.message || '打开页面失败')
+  }
 }
 
 const addPipeline = () => {
@@ -497,11 +537,17 @@ onBeforeUnmount(() => {
         <div v-show="configExpanded" class="config-body">
           <div class="form-grid">
             <label>
-              <span>Token</span>
+              <span class="field-label">
+                Token
+                <a class="token-link" href="#" @click.prevent="handleOpenHelpUrl(TOKEN_HELP_URL)">获取 Token</a>
+              </span>
               <n-input v-model:value="form.token" type="password" show-password-on="click" placeholder="Yunxiao Token" />
             </label>
             <label>
-              <span>组织 ID</span>
+              <span class="field-label">
+                组织 ID
+                <a class="token-link" href="#" @click.prevent="handleOpenHelpUrl(ORG_HELP_URL)">获取组织 ID</a>
+              </span>
               <n-input v-model:value="form.orgId" placeholder="Org ID" />
             </label>
             <label>
@@ -876,6 +922,24 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 6px;
   font-size: 13px;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.token-link {
+  color: #18a058;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.token-link:hover {
+  text-decoration: underline;
 }
 
 .sub-block {
