@@ -1158,6 +1158,148 @@ fn drop_pending_if_stale(runtime: &mut MonitorRuntime) {
     }
 }
 
+/// 待办对应的卡点/分支选择是否仍可操作；若已在外部处理或节点已推进则返回 false。
+fn pending_still_active(pending: &CurrentPending, response_data: &Value) -> bool {
+    if pending.kind == "validate" {
+        for (stage_info, job) in extract_stage_rows(response_data) {
+            let job_id = {
+                let s = value_as_str(job.get("id").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "未知".to_string()
+                } else {
+                    s
+                }
+            };
+            if job_id != pending.job_id {
+                continue;
+            }
+            let job_status = {
+                let s = value_as_str(job.get("status").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "UNKNOWN".to_string()
+                } else {
+                    s
+                }
+            };
+            let stage_name = {
+                let s = value_as_str(stage_info.get("name").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "未知".to_string()
+                } else {
+                    s
+                }
+            };
+            let stage_status = {
+                let s = value_as_str(stage_info.get("status").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "UNKNOWN".to_string()
+                } else {
+                    s
+                }
+            };
+            let has_validate_action = resolve_validate_action(&job);
+            let manual_job_live = job_status == "WAITING" || job_status == "SWITCH_MANUAL";
+            let stage_has_live = resolve_stage_has_live_manual(response_data, &stage_name);
+            let manual_job_inferred = !stage_has_live
+                && (stage_status == "SWITCH_MANUAL" || stage_status == "WAITING")
+                && job_status == "INIT";
+            return has_validate_action
+                && (manual_job_live || manual_job_inferred || job_status == "WAITING" || job_status == "SWITCH_MANUAL");
+        }
+        return false;
+    }
+
+    if pending.kind == "execute" {
+        let candidate_ids: HashSet<String> = pending
+            .candidates
+            .iter()
+            .map(|item| item.job_id.clone())
+            .chain(std::iter::once(pending.job_id.clone()))
+            .filter(|id| !id.is_empty())
+            .collect();
+        for (stage_info, job) in extract_stage_rows(response_data) {
+            let job_id = {
+                let s = value_as_str(job.get("id").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "未知".to_string()
+                } else {
+                    s
+                }
+            };
+            if !candidate_ids.contains(&job_id) {
+                continue;
+            }
+            let job_status = {
+                let s = value_as_str(job.get("status").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "UNKNOWN".to_string()
+                } else {
+                    s
+                }
+            };
+            let stage_name = {
+                let s = value_as_str(stage_info.get("name").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "未知".to_string()
+                } else {
+                    s
+                }
+            };
+            let stage_status = {
+                let s = value_as_str(stage_info.get("status").unwrap_or(&Value::Null));
+                if s.is_empty() {
+                    "UNKNOWN".to_string()
+                } else {
+                    s
+                }
+            };
+            if resolve_execute_action(&job)
+                && job_status == "INIT"
+                && (stage_status == "SWITCH_MANUAL" || stage_status == "WAITING")
+                && !resolve_stage_branch_already_progressed(response_data, &stage_name, &job_id)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    false
+}
+
+fn clear_resolved_pending(
+    runtime: &mut MonitorRuntime,
+    pipeline_id: &str,
+    run_id: &str,
+    response_data: &Value,
+    prefix: &str,
+) -> bool {
+    let Some(pending) = runtime.current_pending.clone() else {
+        return false;
+    };
+    if pending.pipeline_id != pipeline_id || pending.run_id != run_id {
+        return false;
+    }
+    if pending_still_active(&pending, response_data) {
+        return false;
+    }
+    let kind_text = if pending.kind == "validate" {
+        "人工卡点"
+    } else {
+        "分支选择"
+    };
+    append_log(
+        runtime,
+        "info",
+        format!("{prefix} 待办已失效（{kind_text} 已处理或节点已推进），自动清除"),
+    );
+    if runtime.last_notified_pending_id == pending.id {
+        runtime.last_notified_pending_id.clear();
+    }
+    runtime.current_pending = None;
+    true
+}
+
 struct CycleResult {
     refresh: bool,
 }
@@ -1466,6 +1608,17 @@ async fn inspect_pipeline_run(
             );
         }
         return cycle;
+    }
+
+    // 外部已处理或节点已推进时，清除失效待办，避免一直挂着
+    if clear_resolved_pending(
+        runtime,
+        pipeline_id,
+        &current_run_id,
+        &response_data,
+        &prefix,
+    ) {
+        cycle.refresh = true;
     }
 
     let mut active_summary: Option<String> = None;
