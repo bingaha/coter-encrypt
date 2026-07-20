@@ -534,7 +534,7 @@ onBeforeUnmount(() => {
           </n-button>
         </div>
 
-        <div v-show="configExpanded" class="config-body">
+        <div v-if="configExpanded" class="config-body">
           <div class="form-grid">
             <label>
               <span class="field-label">
@@ -879,6 +879,8 @@ onBeforeUnmount(() => {
   padding: 16px 20px 28px;
   display: grid;
   gap: 16px;
+  /* 高分辨率/大窗口下避免 auto 行被均分拉高，导致折叠配置栏仍占大块空白 */
+  align-content: start;
 }
 
 .panel {
@@ -896,8 +898,17 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
+.config-panel.collapsed {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 .config-panel.collapsed .panel-title {
   margin-bottom: 0;
+}
+
+.config-panel.collapsed .config-body {
+  display: none;
 }
 
 .config-title {
