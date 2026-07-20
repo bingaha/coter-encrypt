@@ -274,6 +274,10 @@ fn main() {
         }))
         .manage(pipeline_monitor::create_state())
         .setup(|app| {
+            let version = env!("CARGO_PKG_VERSION");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(&format!("加解密工具 v{version}"));
+            }
             pipeline_monitor::spawn_background(app.handle().clone());
             Ok(())
         })
