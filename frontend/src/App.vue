@@ -10,6 +10,7 @@ import {
  darkTheme
 } from 'naive-ui'
 import MysqlDatasourceModal from '@/components/MysqlDatasourceModal.vue'
+import HttpProxyModal from '@/components/HttpProxyModal.vue'
 
 // 主题状态管理，从 localStorage 读取初始值
 const isDarkMode = ref(localStorage.getItem('theme') === 'dark')
@@ -40,6 +41,7 @@ provide('toggleTheme', toggleTheme)
  </keep-alive>
  </router-view>
  <mysql-datasource-modal />
+ <http-proxy-modal />
  </div>
  </n-notification-provider>
  </n-dialog-provider>

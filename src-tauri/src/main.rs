@@ -5,9 +5,12 @@ mod cert_query;
 mod crypto;
 mod executor;
 mod har;
+mod http_client;
 mod oss_transfer;
 mod pipeline_monitor;
 mod project_store;
+
+use std::time::Duration;
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -157,8 +160,31 @@ async fn open_default_browser_with_cookies(
 async fn transfer_oss_key(
     oss_key: String,
     direction: String,
+    proxy_state: tauri::State<'_, http_client::HttpProxyState>,
 ) -> Result<oss_transfer::OssTransferResult, String> {
-    oss_transfer::transfer_oss_key(&oss_key, &direction).await
+    let proxy = proxy_state.get();
+    oss_transfer::transfer_oss_key(&oss_key, &direction, &proxy).await
+}
+
+#[tauri::command]
+fn load_http_proxy_config(
+    proxy_state: tauri::State<'_, http_client::HttpProxyState>,
+) -> Result<http_client::HttpProxyConfig, String> {
+    Ok(proxy_state.get())
+}
+
+#[tauri::command]
+fn save_http_proxy_config(
+    config: http_client::HttpProxyConfig,
+    proxy_state: tauri::State<'_, http_client::HttpProxyState>,
+    monitor_state: tauri::State<'_, pipeline_monitor::MonitorState>,
+) -> Result<http_client::HttpProxyConfig, String> {
+    let config = http_client::normalize_config(config)?;
+    http_client::save_http_proxy_config_to_disk(&config)?;
+    proxy_state.set(config.clone());
+    let client = http_client::build_http_client(Duration::from_secs(20), &config)?;
+    monitor_state.replace_http_client(client);
+    Ok(config)
 }
 
 #[tauri::command]
@@ -272,6 +298,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .manage(http_client::create_state())
         .manage(pipeline_monitor::create_state())
         .setup(|app| {
             let version = env!("CARGO_PKG_VERSION");
@@ -308,6 +335,8 @@ fn main() {
             load_oss_transfer_history,
             delete_oss_transfer_record,
             clear_oss_transfer_history,
+            load_http_proxy_config,
+            save_http_proxy_config,
             load_pipeline_monitor_config,
             save_pipeline_monitor_config,
             start_pipeline_monitor,

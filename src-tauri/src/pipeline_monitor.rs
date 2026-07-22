@@ -216,7 +216,20 @@ struct MonitorRuntime {
 pub struct MonitorState {
     inner: Mutex<MonitorRuntime>,
     pub loop_started: AtomicBool,
-    pub http: Client,
+    http: std::sync::Mutex<Client>,
+}
+
+impl MonitorState {
+    pub fn http_client(&self) -> Client {
+        self.http
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn replace_http_client(&self, client: Client) {
+        *self.http.lock().unwrap_or_else(|e| e.into_inner()) = client;
+    }
 }
 
 
@@ -2114,6 +2127,9 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MonitorState)
 
 pub fn create_state() -> MonitorState {
     let config = load_config_from_disk().unwrap_or_default();
+    let proxy = crate::http_client::load_http_proxy_config().unwrap_or_default();
+    let http = crate::http_client::build_http_client(Duration::from_secs(20), &proxy)
+        .unwrap_or_else(|_| Client::new());
     MonitorState {
         inner: Mutex::new(MonitorRuntime {
             config,
@@ -2126,10 +2142,7 @@ pub fn create_state() -> MonitorState {
             last_notified_pending_id: String::new(),
         }),
         loop_started: AtomicBool::new(false),
-        http: Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .unwrap_or_else(|_| Client::new()),
+        http: std::sync::Mutex::new(http),
     }
 }
 
@@ -2147,7 +2160,8 @@ pub fn spawn_background(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             let state = app_handle.state::<MonitorState>();
-            let sleep_secs = run_monitor_cycle(&app_handle, &state.http, &state).await;
+            let http = state.http_client();
+            let sleep_secs = run_monitor_cycle(&app_handle, &http, &state).await;
             tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
         }
     });
@@ -2240,7 +2254,8 @@ pub async fn start_pipeline_monitor_single(
         )
     };
 
-    let detail = query_pipeline_run(&state.http, &token, &org_id, &pipeline_id, &run_id).await;
+    let http = state.http_client();
+    let detail = query_pipeline_run(&http, &token, &org_id, &pipeline_id, &run_id).await;
     let mut run_status = String::new();
     let mut trigger_user = String::new();
     let mut creator_id = String::new();
@@ -2255,7 +2270,7 @@ pub async fn start_pipeline_monitor_single(
 
     // 运行详情里不一定带 creatorAccountId / status，再从最新运行补一次
     if creator_id.is_empty() || run_status.is_empty() {
-        let latest = query_latest_run(&state.http, &token, &org_id, &pipeline_id).await;
+        let latest = query_latest_run(&http, &token, &org_id, &pipeline_id).await;
         if latest.success {
             if let Some(latest_run) = latest.data.as_ref() {
                 let latest_run_id =
@@ -2279,7 +2294,7 @@ pub async fn start_pipeline_monitor_single(
     if detail.success {
         if let Some(detail_data) = detail.data.as_ref() {
             trigger_user =
-                resolve_trigger_user_name(&state.http, &token, &org_id, detail_data, &creator_id)
+                resolve_trigger_user_name(&http, &token, &org_id, detail_data, &creator_id)
                     .await;
         }
     }
@@ -2412,7 +2427,8 @@ pub async fn query_pipeline_latest_run(
         )
     };
 
-    let latest = query_latest_run(&state.http, &token, &org_id, &pipeline_id).await;
+    let http = state.http_client();
+    let latest = query_latest_run(&http, &token, &org_id, &pipeline_id).await;
     if !latest.success || latest.data.is_none() {
         return Err(if latest.error_message.is_empty() {
             "查询最新运行失败".to_string()
@@ -2437,10 +2453,10 @@ pub async fn query_pipeline_latest_run(
     };
     let trigger_text = resolve_trigger_text(latest_run.get("triggerMode").unwrap_or(&Value::Null));
     let creator_id = value_as_str(latest_run.get("creatorAccountId").unwrap_or(&Value::Null));
-    let detail = query_pipeline_run(&state.http, &token, &org_id, &pipeline_id, &run_id).await;
+    let detail = query_pipeline_run(&http, &token, &org_id, &pipeline_id, &run_id).await;
     let trigger_user = if detail.success {
         if let Some(detail_data) = detail.data.as_ref() {
-            resolve_trigger_user_name(&state.http, &token, &org_id, detail_data, &creator_id).await
+            resolve_trigger_user_name(&http, &token, &org_id, detail_data, &creator_id).await
         } else {
             String::new()
         }
@@ -2491,6 +2507,7 @@ pub async fn respond_pipeline_monitor_action(
         (request.action.clone(), pending, runtime.config.clone())
     };
 
+    let http = state.http_client();
     match action.as_str() {
         "later" => {
             let mut runtime = state.inner.lock().await;
@@ -2514,7 +2531,7 @@ pub async fn respond_pipeline_monitor_action(
                 return Err("当前待办不是人工卡点审批".to_string());
             }
             let result = pass_manual_checkpoint(
-                &state.http,
+                &http,
                 &config.token,
                 &config.org_id,
                 &pending.pipeline_id,
@@ -2550,7 +2567,7 @@ pub async fn respond_pipeline_monitor_action(
                 return Err("当前待办不是人工卡点审批".to_string());
             }
             let result = refuse_manual_checkpoint(
-                &state.http,
+                &http,
                 &config.token,
                 &config.org_id,
                 &pending.pipeline_id,
@@ -2591,7 +2608,7 @@ pub async fn respond_pipeline_monitor_action(
                 request.job_id.clone()
             };
             let result = execute_manual_node(
-                &state.http,
+                &http,
                 &config.token,
                 &config.org_id,
                 &pending.pipeline_id,

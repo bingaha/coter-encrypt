@@ -2,8 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+use crate::http_client::{self, HttpProxyConfig};
 
 const PROD_QUERY_URL: &str =
  "https://gateway.shebaotong.com/platform-oss/oss/queryFile?ossKey=";
@@ -135,6 +136,7 @@ pub struct OssTransferResult {
 pub async fn transfer_oss_key(
  oss_key: &str,
  direction: &str,
+ proxy_config: &HttpProxyConfig,
 ) -> Result<OssTransferResult, String> {
  let (query_url, upload_url) = match direction {
  "prod_to_test" => (PROD_QUERY_URL, TEST_UPLOAD_URL),
@@ -142,10 +144,7 @@ pub async fn transfer_oss_key(
  _ => return Err("无效的转换方向".to_string()),
  };
 
- let client = Client::builder()
- .timeout(std::time::Duration::from_secs(60))
- .build()
- .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+ let client = http_client::build_http_client(std::time::Duration::from_secs(60), proxy_config)?;
 
  // 1. Query source environment
  let query_full_url = format!("{query_url}{oss_key}");

@@ -20,11 +20,13 @@ import {
  SearchOutline,
  ServerOutline,
  SwapHorizontalOutline,
- GitNetworkOutline
+ GitNetworkOutline,
+ GlobeOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
 import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
+import { useHttpProxyConfig } from '@/composables/useHttpProxyConfig'
 import { listen } from '@tauri-apps/api/event'
 import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
 
@@ -42,6 +44,12 @@ const {
  loadConfig,
  checkConnection
 } = useMysqlDatasourceConfig()
+
+const {
+ statusLabel: proxyStatusLabel,
+ openModal: openProxyModal,
+ loadConfig: loadProxyConfig
+} = useHttpProxyConfig()
 
 const toolEntries = [
  {
@@ -143,6 +151,7 @@ onMounted(async () => {
  if (loaded) {
  checkConnection()
  }
+ await loadProxyConfig()
  await refreshPipelineBadge()
  try {
  unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
@@ -194,6 +203,21 @@ onBeforeUnmount(() => {
  </n-button>
  </template>
  配置并测试 MySQL 数据源
+ </n-tooltip>
+
+ <n-tooltip trigger="hover">
+ <template #trigger>
+ <n-button secondary size="small" @click="openProxyModal">
+ <template #icon>
+ <n-icon><GlobeOutline /></n-icon>
+ </template>
+ 网络代理
+ <n-tag class="db-status-tag" type="default" size="small" :bordered="false">
+ {{ proxyStatusLabel }}
+ </n-tag>
+ </n-button>
+ </template>
+ 配置出站 HTTP 代理（直连 / 系统代理 / 指定代理）
  </n-tooltip>
 
  <n-tooltip trigger="hover">
