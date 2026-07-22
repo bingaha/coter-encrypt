@@ -15,3 +15,8 @@ export const clearMergeMonitorLogs = () => invokeApi('clear_merge_monitor_logs')
 
 export const openMergeRequestPage = (detailUrl) =>
   invokeApi('open_merge_request_page', { detailUrl })
+
+export const listMergeMonitorRepositories = (token, orgId) =>
+  invokeApi('list_merge_monitor_repositories', {
+    request: { token, orgId }
+  })

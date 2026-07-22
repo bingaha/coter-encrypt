@@ -440,25 +440,34 @@ fn finish_single_monitor(runtime: &mut MonitorRuntime) {
     append_log(runtime, "info", "单次监控已结束");
 }
 
+fn log_system_notify_result(runtime: &mut MonitorRuntime, title: &str, result: Result<(), String>) {
+    match result {
+        Ok(()) => append_log(runtime, "info", format!("已发送系统通知：{title}")),
+        Err(err) => append_log(runtime, "warn", format!("系统通知发送失败：{title} · {err}")),
+    }
+}
+
 fn show_loop_run_failed_alert(
     app: &AppHandle,
+    runtime: &mut MonitorRuntime,
     pipeline_name: &str,
     pipeline_id: &str,
     run_id: &str,
     status: &str,
 ) {
     let status_text = resolve_status_text(status);
-    crate::system_notify::show_system_notification(
+    let title = "循环监控 · 运行失败";
+    let result = crate::system_notify::show_system_notification(
         app,
-        "循环监控 · 运行失败",
-        &format!(
-            "流水线 {pipeline_name}#{pipeline_id}\n运行 #{run_id}\n状态：{status_text}"
-        ),
+        title,
+        &format!("流水线 {pipeline_name}#{pipeline_id} · 运行 #{run_id} · 状态：{status_text}"),
     );
+    log_system_notify_result(runtime, title, result);
 }
 
 fn show_single_run_ended_alert(
     app: &AppHandle,
+    runtime: &mut MonitorRuntime,
     pipeline_name: &str,
     pipeline_id: &str,
     run_id: &str,
@@ -471,21 +480,24 @@ fn show_single_run_ended_alert(
     } else {
         "单次监控 · 运行结束"
     };
-    crate::system_notify::show_system_notification(
+    let result = crate::system_notify::show_system_notification(
         app,
         title,
         &format!(
-            "流水线 {pipeline_name}#{pipeline_id}\n运行 #{run_id}\n状态：{status_text}\n\n单次监控已自动停止。"
+            "流水线 {pipeline_name}#{pipeline_id} · 运行 #{run_id} · 状态：{status_text} · 单次监控已自动停止"
         ),
     );
+    log_system_notify_result(runtime, title, result);
 }
 
-fn show_single_aborted_alert(app: &AppHandle, message: &str) {
-    crate::system_notify::show_system_notification(
+fn show_single_aborted_alert(app: &AppHandle, runtime: &mut MonitorRuntime, message: &str) {
+    let title = "单次监控 · 已停止";
+    let result = crate::system_notify::show_system_notification(
         app,
-        "单次监控 · 已停止",
-        &format!("{message}\n\n单次监控已自动停止。"),
+        title,
+        &format!("{message} · 单次监控已自动停止"),
     );
+    log_system_notify_result(runtime, title, result);
 }
 
 fn running_conflict_message(mode: MonitorMode) -> String {
@@ -1593,6 +1605,7 @@ async fn inspect_pipeline_run(
         if single_mode {
             show_single_run_ended_alert(
                 app,
+                runtime,
                 &pipeline_name,
                 pipeline_id,
                 &current_run_id,
@@ -1602,6 +1615,7 @@ async fn inspect_pipeline_run(
         } else if matches!(pipeline_status.as_str(), "FAIL" | "CANCELED" | "FAILED" | "ERROR") {
             show_loop_run_failed_alert(
                 app,
+                runtime,
                 &pipeline_name,
                 pipeline_id,
                 &current_run_id,
@@ -1806,6 +1820,7 @@ async fn inspect_pipeline_run(
                                 if single_mode {
                                     show_single_aborted_alert(
                                         app,
+                                        runtime,
                                         &format!(
                                             "{prefix} 自动通过失败：{}",
                                             pass_result.error_message
@@ -1832,6 +1847,7 @@ async fn inspect_pipeline_run(
                                 }
                                 show_single_aborted_alert(
                                     app,
+                                    runtime,
                                     &format!("{prefix} 人工卡点无审批权限，阶段「{stage_name}」"),
                                 );
                                 finish_single_monitor(runtime);
@@ -1901,6 +1917,7 @@ async fn inspect_pipeline_run(
                     if single_mode {
                         show_single_aborted_alert(
                             app,
+                            runtime,
                             &format!("{prefix} 发现分支选择，但无「人工卡点」分支"),
                         );
                         finish_single_monitor(runtime);
@@ -1949,6 +1966,7 @@ async fn inspect_pipeline_run(
                         if single_mode {
                             show_single_aborted_alert(
                                 app,
+                                runtime,
                                 &format!(
                                     "{prefix} 自动执行失败：{}",
                                     exec_result.error_message
@@ -2294,10 +2312,17 @@ pub async fn start_pipeline_monitor_single(
         };
     }
 
-    // 启动前已结束：直接弹窗提示，不进入监控
+    // 启动前已结束：直接通知提示，不进入监控
     if !run_status.is_empty() && resolve_run_finished(&run_status) {
-        show_single_run_ended_alert(&app, &pipeline_name, &pipeline_id, &run_id, &run_status);
         let mut runtime = state.inner.lock().await;
+        show_single_run_ended_alert(
+            &app,
+            &mut runtime,
+            &pipeline_name,
+            &pipeline_id,
+            &run_id,
+            &run_status,
+        );
         append_log(
             &mut runtime,
             "info",

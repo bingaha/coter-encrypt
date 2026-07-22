@@ -3,9 +3,11 @@ import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NButton,
+  NCheckbox,
   NIcon,
   NInput,
   NInputNumber,
+  NModal,
   NSwitch,
   NTag,
   NText,
@@ -20,7 +22,6 @@ import {
   GitMergeOutline,
   OpenOutline,
   SaveOutline,
-  AddOutline,
   TrashOutline,
   ChevronDownOutline,
   ChevronUpOutline
@@ -35,7 +36,8 @@ import {
   stopMergeMonitor,
   getMergeMonitorSnapshot,
   clearMergeMonitorLogs,
-  openMergeRequestPage
+  openMergeRequestPage,
+  listMergeMonitorRepositories
 } from '@/api/mergeMonitor'
 
 const router = useRouter()
@@ -66,6 +68,11 @@ const form = ref({
   repositories: []
 })
 const authorsText = ref('')
+const repoPickerVisible = ref(false)
+const repoPickerLoading = ref(false)
+const repoPickerSearch = ref('')
+const remoteRepositories = ref([])
+const selectedRepoIds = ref([])
 let unlistenState = null
 let pollTimer = null
 
@@ -73,6 +80,20 @@ const running = computed(() => !!snapshot.value.running)
 const current = computed(() => snapshot.value.current)
 const todos = computed(() => snapshot.value.todos || [])
 const logs = computed(() => [...(snapshot.value.logs || [])].reverse())
+const filteredRemoteRepositories = computed(() => {
+  const keyword = String(repoPickerSearch.value || '')
+    .trim()
+    .toLowerCase()
+  const list = remoteRepositories.value || []
+  if (!keyword) return list
+  return list.filter((item) => {
+    const name = String(item.name || '').toLowerCase()
+    const path = String(item.pathWithNamespace || '').toLowerCase()
+    const id = String(item.id || '').toLowerCase()
+    return name.includes(keyword) || path.includes(keyword) || id.includes(keyword)
+  })
+})
+const selectedRepoCount = computed(() => selectedRepoIds.value.length)
 
 const levelLabel = (level) => {
   const map = {
@@ -235,16 +256,92 @@ const handleOpenHelpUrl = async (url) => {
   }
 }
 
-const addRepository = () => {
-  form.value.repositories.push({
-    name: '',
-    repositoryId: '',
-    enabled: true
-  })
-}
-
 const removeRepository = (index) => {
   form.value.repositories.splice(index, 1)
+}
+
+const isRepoSelected = (id) => selectedRepoIds.value.includes(String(id))
+
+const toggleRepoSelected = (id, checked) => {
+  const key = String(id)
+  if (checked) {
+    if (!selectedRepoIds.value.includes(key)) {
+      selectedRepoIds.value = [...selectedRepoIds.value, key]
+    }
+    return
+  }
+  selectedRepoIds.value = selectedRepoIds.value.filter((item) => item !== key)
+}
+
+const openRepoPicker = async () => {
+  const token = String(form.value.token || '').trim()
+  const orgId = String(form.value.orgId || '').trim()
+  if (!token) {
+    configExpanded.value = true
+    message.error('请先配置云效 Token')
+    return
+  }
+  if (!orgId) {
+    configExpanded.value = true
+    message.error('请先配置组织 ID')
+    return
+  }
+
+  repoPickerVisible.value = true
+  repoPickerLoading.value = true
+  repoPickerSearch.value = ''
+  remoteRepositories.value = []
+  selectedRepoIds.value = (form.value.repositories || [])
+    .map((item) => String(item.repositoryId || '').trim())
+    .filter(Boolean)
+
+  try {
+    const { data } = await listMergeMonitorRepositories(token, orgId)
+    remoteRepositories.value = Array.isArray(data) ? data : []
+    if (!remoteRepositories.value.length) {
+      message.warning('未获取到仓库，请确认 Token 与组织 ID')
+    }
+  } catch (error) {
+    repoPickerVisible.value = false
+    message.error(error?.message || '获取仓库列表失败')
+  } finally {
+    repoPickerLoading.value = false
+  }
+}
+
+const confirmRepoPicker = () => {
+  const enabledMap = new Map(
+    (form.value.repositories || []).map((item) => [
+      String(item.repositoryId || '').trim(),
+      !!item.enabled
+    ])
+  )
+  const selectedSet = new Set(selectedRepoIds.value.map((id) => String(id)))
+  const next = (remoteRepositories.value || [])
+    .filter((item) => selectedSet.has(String(item.id)))
+    .map((item) => {
+      const id = String(item.id)
+      return {
+        name: item.name || item.pathWithNamespace || id,
+        repositoryId: id,
+        enabled: enabledMap.has(id) ? enabledMap.get(id) : true
+      }
+    })
+
+  // 保留远端未返回但仍已勾选的本地配置（防御性）
+  for (const id of selectedSet) {
+    if (next.some((item) => item.repositoryId === id)) continue
+    const existing = (form.value.repositories || []).find(
+      (item) => String(item.repositoryId || '').trim() === id
+    )
+    if (existing) {
+      next.push({ ...existing })
+    }
+  }
+
+  form.value.repositories = next
+  repoPickerVisible.value = false
+  message.success(next.length ? `已选择 ${next.length} 个仓库` : '已清空仓库列表')
 }
 
 const goHome = () => {
@@ -398,16 +495,14 @@ onBeforeUnmount(() => {
           <div class="sub-block">
             <div class="sub-title">
               <span>仓库列表</span>
-              <n-button size="tiny" secondary @click="addRepository">
-                <template #icon>
-                  <n-icon><AddOutline /></n-icon>
-                </template>
-                添加
-              </n-button>
+              <a class="token-link" href="#" @click.prevent="openRepoPicker">获取仓库列表</a>
+            </div>
+            <div v-if="!form.repositories.length" class="empty-inline">
+              <n-text depth="3">尚未选择仓库，点击「获取仓库列表」勾选生效</n-text>
             </div>
             <div
               v-for="(item, index) in form.repositories"
-              :key="index"
+              :key="item.repositoryId || index"
               class="repo-row"
             >
               <n-switch v-model:value="item.enabled" size="small" />
@@ -425,13 +520,19 @@ onBeforeUnmount(() => {
 
       <section class="panel">
         <div class="panel-title">
-          <strong>当前跟踪</strong>
+          <div class="panel-title-copy">
+            <strong>当前跟踪</strong>
+            <n-text depth="3" class="panel-hint">等待 AI 评审完成，全局最多 1 条</n-text>
+          </div>
         </div>
         <div v-if="!current" class="empty">
-          <n-text depth="3">暂无正在跟踪的合并请求</n-text>
+          <n-text depth="3">暂无等待 AI 评审的合并请求</n-text>
         </div>
         <div v-else class="tracking-card">
-          <h3>{{ current.title || '未命名合并请求' }}</h3>
+          <div class="card-heading">
+            <h3>{{ current.title || '未命名合并请求' }}</h3>
+            <n-tag type="warning" size="small">AI评审：进行中</n-tag>
+          </div>
           <n-text depth="3">
             {{ current.repoName || '-' }}
             · !{{ current.localId }}
@@ -455,14 +556,17 @@ onBeforeUnmount(() => {
 
       <section class="panel todo-panel">
         <div class="panel-title">
-          <strong>待办列表</strong>
+          <div class="panel-title-copy">
+            <strong>待办列表</strong>
+            <n-text depth="3" class="panel-hint">AI 已完成，可打开查看；打开不会移除</n-text>
+          </div>
           <n-tag v-if="snapshot.todoCount" type="warning" size="small">
             {{ snapshot.todoCount }}
           </n-tag>
         </div>
 
         <div v-if="!todos.length" class="empty">
-          <n-text depth="3">暂无待办。AI 评审完成后会出现在此，打开不会移除。</n-text>
+          <n-text depth="3">暂无 AI 已完成的待办</n-text>
         </div>
         <div v-else class="todo-list">
           <article
@@ -471,7 +575,10 @@ onBeforeUnmount(() => {
             class="todo-card"
           >
             <div class="todo-meta">
-              <h3>{{ todo.title || '未命名合并请求' }}</h3>
+              <div class="card-heading">
+                <h3>{{ todo.title || '未命名合并请求' }}</h3>
+                <n-tag type="success" size="small">AI评审：已完成</n-tag>
+              </div>
               <n-text depth="3">
                 {{ todo.repoName || '-' }}
                 · !{{ todo.localId }}
@@ -521,6 +628,65 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </div>
+
+    <n-modal
+      v-model:show="repoPickerVisible"
+      preset="card"
+      title="选择仓库"
+      style="width: min(640px, calc(100vw - 32px))"
+      :mask-closable="!repoPickerLoading"
+    >
+      <div class="repo-picker">
+        <n-input
+          v-model:value="repoPickerSearch"
+          clearable
+          placeholder="搜索名称 / 路径 / ID"
+          :disabled="repoPickerLoading"
+        />
+        <n-text depth="3" class="repo-picker-hint">
+          已选 {{ selectedRepoCount }} 个
+          <template v-if="!repoPickerLoading"> · 共 {{ remoteRepositories.length }} 个</template>
+        </n-text>
+        <div v-if="repoPickerLoading" class="repo-picker-loading">
+          <n-text depth="3">正在获取仓库列表...</n-text>
+        </div>
+        <div v-else-if="!filteredRemoteRepositories.length" class="repo-picker-loading">
+          <n-text depth="3">没有匹配的仓库</n-text>
+        </div>
+        <div v-else class="repo-picker-list">
+          <label
+            v-for="item in filteredRemoteRepositories"
+            :key="item.id"
+            class="repo-picker-item"
+          >
+            <n-checkbox
+              :checked="isRepoSelected(item.id)"
+              @update:checked="(checked) => toggleRepoSelected(item.id, checked)"
+            />
+            <span class="repo-picker-meta">
+              <strong>{{ item.name || item.id }}</strong>
+              <n-text depth="3">
+                {{ item.pathWithNamespace || '-' }} · ID {{ item.id }}
+              </n-text>
+            </span>
+          </label>
+        </div>
+      </div>
+      <template #footer>
+        <div class="repo-picker-footer">
+          <n-button :disabled="repoPickerLoading" @click="repoPickerVisible = false">
+            取消
+          </n-button>
+          <n-button
+            type="primary"
+            :disabled="repoPickerLoading"
+            @click="confirmRepoPicker"
+          >
+            确认生效
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
   </main>
 </template>
 
@@ -599,6 +765,17 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
+.panel-title-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.panel-hint {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .config-panel.collapsed {
   padding-top: 10px;
   padding-bottom: 10px;
@@ -667,6 +844,64 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+.empty-inline {
+  margin-bottom: 8px;
+}
+
+.repo-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.repo-picker-hint {
+  font-size: 12px;
+}
+
+.repo-picker-loading {
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.repo-picker-list {
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.repo-picker-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.repo-picker-item:hover {
+  background: rgba(32, 128, 240, 0.08);
+}
+
+.repo-picker-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.repo-picker-meta strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.repo-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .repo-row {
   display: grid;
   grid-template-columns: auto 1fr 1fr auto;
@@ -685,8 +920,16 @@ onBeforeUnmount(() => {
 
 .tracking-card h3,
 .todo-card h3 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 15px;
+}
+
+.card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 
 .tracking-actions {

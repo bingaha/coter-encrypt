@@ -348,6 +348,14 @@ fn open_merge_request_page(
     merge_monitor::open_merge_request_page(app, detail_url)
 }
 
+#[tauri::command]
+async fn list_merge_monitor_repositories(
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+    request: merge_monitor::ListRemoteRepositoriesRequest,
+) -> Result<Vec<merge_monitor::RemoteRepositoryItem>, String> {
+    merge_monitor::list_merge_monitor_repositories(state, request).await
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -415,7 +423,8 @@ fn main() {
             stop_merge_monitor,
             get_merge_monitor_snapshot,
             clear_merge_monitor_logs,
-            open_merge_request_page
+            open_merge_request_page,
+            list_merge_monitor_repositories
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoterEncrypt");

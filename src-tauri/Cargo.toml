@@ -1,6 +1,6 @@
 [package]
 name = "coter-encrypt-desktop"
-version = "0.1.13"
+version = "0.1.14"
 description = "Coter Encrypt desktop application"
 authors = ["Coter Encrypt"]
 edition = "2021"
@@ -32,6 +32,7 @@ tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["net", "time"] }
 tokio-tungstenite = "0.27"
 url = "2"
+notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"

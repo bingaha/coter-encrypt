@@ -117,6 +117,21 @@ pub struct MergeSnapshot {
     pub logs: Vec<LogEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRepositoryItem {
+    pub id: String,
+    pub name: String,
+    pub path_with_namespace: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRemoteRepositoriesRequest {
+    pub token: String,
+    pub org_id: String,
+}
+
 #[derive(Debug)]
 struct MergeRuntime {
     config: MergeMonitorConfig,
@@ -417,6 +432,47 @@ fn values_as_array(data: &Value) -> Vec<Value> {
     Vec::new()
 }
 
+fn remote_repository_from_value(item: &Value) -> Option<RemoteRepositoryItem> {
+    let id = item
+        .get("id")
+        .and_then(|v| {
+            v.as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                .or_else(|| v.as_str().map(|s| s.trim().to_string()))
+        })
+        .filter(|s| !s.is_empty())?;
+    let name = item
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let path_with_namespace = item
+        .get("pathWithNamespace")
+        .and_then(|v| v.as_str())
+        .or_else(|| item.get("path").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let display_name = if !name.is_empty() {
+        name
+    } else if !path_with_namespace.is_empty() {
+        path_with_namespace
+            .rsplit('/')
+            .next()
+            .unwrap_or(&path_with_namespace)
+            .to_string()
+    } else {
+        id.clone()
+    };
+    Some(RemoteRepositoryItem {
+        id,
+        name: display_name,
+        path_with_namespace,
+    })
+}
+
 fn candidate_from_change_request(
     item: &Value,
     fallback_project_id: i64,
@@ -565,6 +621,47 @@ async fn list_opened_change_requests(
     Ok(values_as_array(&data))
 }
 
+async fn list_organization_repositories(
+    http: &Client,
+    token: &str,
+    org: &str,
+) -> Result<Vec<RemoteRepositoryItem>, String> {
+    const PER_PAGE: u32 = 100;
+    const MAX_PAGES: u32 = 50;
+    let mut all = Vec::new();
+    let mut seen = HashSet::new();
+
+    for page in 1..=MAX_PAGES {
+        let path = format!(
+            "/oapi/v1/codeup/organizations/{org}/repositories?page={page}&perPage={PER_PAGE}"
+        );
+        let data = call_open_api(http, token, &path, "GET", None).await?;
+        let page_items = values_as_array(&data);
+        if page_items.is_empty() {
+            break;
+        }
+        let page_count = page_items.len();
+        for item in page_items {
+            if let Some(repo) = remote_repository_from_value(&item) {
+                if seen.insert(repo.id.clone()) {
+                    all.push(repo);
+                }
+            }
+        }
+        if page_count < PER_PAGE as usize {
+            break;
+        }
+    }
+
+    all.sort_by(|a, b| {
+        a.path_with_namespace
+            .to_ascii_lowercase()
+            .cmp(&b.path_with_namespace.to_ascii_lowercase())
+            .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+    });
+    Ok(all)
+}
+
 async fn list_change_request_comments(
     http: &Client,
     token: &str,
@@ -700,14 +797,26 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         .map(|c| c.project_id == tracked.project_id && c.local_id == tracked.local_id)
                         .unwrap_or(false)
                     {
-                        crate::system_notify::show_system_notification(
+                        let notify_title = "合并监控 · AI评审完成";
+                        match crate::system_notify::show_system_notification(
                             app,
-                            "合并监控 · AI评审完成",
+                            notify_title,
                             &format!(
                                 "{} · {} · {}",
                                 tracked.author_name, tracked.title, tracked.repo_name
                             ),
-                        );
+                        ) {
+                            Ok(()) => append_log(
+                                &mut runtime,
+                                "info",
+                                format!("已发送系统通知：{notify_title}"),
+                            ),
+                            Err(err) => append_log(
+                                &mut runtime,
+                                "warn",
+                                format!("系统通知发送失败：{notify_title} · {err}"),
+                            ),
+                        }
                         runtime
                             .processed
                             .insert((tracked.project_id, tracked.local_id));
@@ -744,10 +853,33 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     }
 
     // No current: scan opened lists.
+    {
+        let mut runtime = state.inner.lock().await;
+        if !runtime.running {
+            return 1;
+        }
+        if enabled_repos.is_empty() {
+            append_log(
+                &mut runtime,
+                "warn",
+                "没有已启用的仓库，跳过合并列表查询",
+            );
+            emit_snapshot(app, &runtime);
+            return list_poll;
+        }
+        append_log(
+            &mut runtime,
+            "info",
+            format!("开始查询合并列表（{} 个仓库）", enabled_repos.len()),
+        );
+        emit_snapshot(app, &runtime);
+    }
+
     let mut opened_keys = HashSet::new();
     let mut all_candidates = Vec::new();
     let mut repo_summaries = HashMap::new();
     let mut any_repo_list_failed = false;
+    let mut per_repo_lines = Vec::new();
 
     for (repo_id, repo_name) in &enabled_repos {
         let fallback_project_id = repo_id.trim().parse::<i64>().unwrap_or(0);
@@ -764,10 +896,12 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     }
                 }
                 repo_summaries.insert(repo_id.clone(), format!("opened: {parsed}"));
+                per_repo_lines.push(format!("{repo_name}: opened {parsed}"));
             }
             Err(error) => {
                 any_repo_list_failed = true;
                 repo_summaries.insert(repo_id.clone(), format!("错误: {error}"));
+                per_repo_lines.push(format!("{repo_name}: 失败"));
                 let mut runtime = state.inner.lock().await;
                 if runtime.running {
                     append_log(
@@ -812,6 +946,29 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
 
     let filtered =
         filter_whitelist_candidates(&all_candidates, &allowed_authors, &runtime.processed);
+    let whitelist_hint = if allowed_authors
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .count()
+        == 0
+    {
+        "；白名单为空，不会匹配任何作者"
+    } else {
+        ""
+    };
+    append_log(
+        &mut runtime,
+        "info",
+        format!(
+            "合并列表查询完成：{} · opened {} · 白名单未处理 {}{}",
+            per_repo_lines.join("；"),
+            all_candidates.len(),
+            filtered.len(),
+            whitelist_hint
+        ),
+    );
+
     if let Some(picked) = pick_earliest_by_created_at(&filtered) {
         append_log(
             &mut runtime,
@@ -892,6 +1049,22 @@ pub fn open_merge_request_page(app: AppHandle, detail_url: String) -> Result<(),
     }
 }
 
+pub async fn list_merge_monitor_repositories(
+    state: State<'_, MergeMonitorState>,
+    request: ListRemoteRepositoriesRequest,
+) -> Result<Vec<RemoteRepositoryItem>, String> {
+    let token = request.token.trim().to_string();
+    let org_id = request.org_id.trim().to_string();
+    if token.is_empty() {
+        return Err(TOKEN_HINT.to_string());
+    }
+    if org_id.is_empty() {
+        return Err(ORG_HINT.to_string());
+    }
+    let http = state.http_client();
+    list_organization_repositories(&http, &token, &org_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,6 +1086,19 @@ mod tests {
         let mut c = dummy_mr(author, local_id);
         c.created_at = created_at.to_string();
         c
+    }
+
+    #[test]
+    fn parse_remote_repository_from_openapi_item() {
+        let item = json!({
+            "id": 5284818,
+            "name": "platform-crawler",
+            "pathWithNamespace": "shebaorobot/platform-crawler"
+        });
+        let repo = remote_repository_from_value(&item).expect("parse repo");
+        assert_eq!(repo.id, "5284818");
+        assert_eq!(repo.name, "platform-crawler");
+        assert_eq!(repo.path_with_namespace, "shebaorobot/platform-crawler");
     }
 
     #[test]

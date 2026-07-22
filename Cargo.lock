@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "coter-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "coter-encrypt-desktop"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "coter-core",
@@ -683,6 +683,7 @@ dependencies = [
  "directories",
  "filetime",
  "futures-util",
+ "notify-rust",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
