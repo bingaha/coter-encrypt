@@ -11,7 +11,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 
@@ -441,14 +440,6 @@ fn finish_single_monitor(runtime: &mut MonitorRuntime) {
     append_log(runtime, "info", "单次监控已结束");
 }
 
-fn show_system_alert(app: &AppHandle, title: &str, message: &str, kind: MessageDialogKind) {
-    app.dialog()
-        .message(message.to_string())
-        .title(title.to_string())
-        .kind(kind)
-        .show(|_| {});
-}
-
 fn show_loop_run_failed_alert(
     app: &AppHandle,
     pipeline_name: &str,
@@ -457,13 +448,12 @@ fn show_loop_run_failed_alert(
     status: &str,
 ) {
     let status_text = resolve_status_text(status);
-    show_system_alert(
+    crate::system_notify::show_system_notification(
         app,
         "循环监控 · 运行失败",
         &format!(
             "流水线 {pipeline_name}#{pipeline_id}\n运行 #{run_id}\n状态：{status_text}"
         ),
-        MessageDialogKind::Error,
     );
 }
 
@@ -476,27 +466,25 @@ fn show_single_run_ended_alert(
 ) {
     let status_text = resolve_status_text(status);
     let failed = matches!(status, "FAIL" | "CANCELED" | "FAILED" | "ERROR");
-    let (title, kind) = if failed {
-        ("单次监控 · 运行失败", MessageDialogKind::Error)
+    let title = if failed {
+        "单次监控 · 运行失败"
     } else {
-        ("单次监控 · 运行结束", MessageDialogKind::Info)
+        "单次监控 · 运行结束"
     };
-    show_system_alert(
+    crate::system_notify::show_system_notification(
         app,
         title,
         &format!(
             "流水线 {pipeline_name}#{pipeline_id}\n运行 #{run_id}\n状态：{status_text}\n\n单次监控已自动停止。"
         ),
-        kind,
     );
 }
 
 fn show_single_aborted_alert(app: &AppHandle, message: &str) {
-    show_system_alert(
+    crate::system_notify::show_system_notification(
         app,
         "单次监控 · 已停止",
         &format!("{message}\n\n单次监控已自动停止。"),
-        MessageDialogKind::Warning,
     );
 }
 

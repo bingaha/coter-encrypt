@@ -9,6 +9,7 @@ mod http_client;
 mod oss_transfer;
 mod pipeline_monitor;
 mod project_store;
+mod system_notify;
 
 use std::time::Duration;
 
@@ -292,6 +293,7 @@ fn open_pipeline_run_page(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
