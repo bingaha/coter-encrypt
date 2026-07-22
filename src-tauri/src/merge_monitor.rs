@@ -392,6 +392,12 @@ fn cleanup_stale(runtime: &mut MergeRuntime, opened_keys: &HashSet<(i64, i64)>) 
         .retain(|t| opened_keys.contains(&(t.project_id, t.local_id)));
 }
 
+/// Skip cleanup when any repo list fetch failed — aggregate `opened_keys` is incomplete
+/// and would falsely drop still-opened processed/todos.
+fn should_cleanup_stale(any_repo_list_failed: bool) -> bool {
+    !any_repo_list_failed
+}
+
 fn json_i64(value: &Value) -> Option<i64> {
     value
         .as_i64()
@@ -682,14 +688,8 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
         {
             Ok(comments) => {
                 if is_ai_review_complete(&comments) {
-                    crate::system_notify::show_system_notification(
-                        app,
-                        "合并监控 · AI评审完成",
-                        &format!(
-                            "{} · {} · {}",
-                            tracked.author_name, tracked.title, tracked.repo_name
-                        ),
-                    );
+                    // Confirm under lock before notify/write so stop between fetch and
+                    // write cannot notify without updating state (or after abandon).
                     let mut runtime = state.inner.lock().await;
                     if !runtime.running {
                         return 1;
@@ -700,6 +700,14 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         .map(|c| c.project_id == tracked.project_id && c.local_id == tracked.local_id)
                         .unwrap_or(false)
                     {
+                        crate::system_notify::show_system_notification(
+                            app,
+                            "合并监控 · AI评审完成",
+                            &format!(
+                                "{} · {} · {}",
+                                tracked.author_name, tracked.title, tracked.repo_name
+                            ),
+                        );
                         runtime
                             .processed
                             .insert((tracked.project_id, tracked.local_id));
@@ -739,6 +747,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     let mut opened_keys = HashSet::new();
     let mut all_candidates = Vec::new();
     let mut repo_summaries = HashMap::new();
+    let mut any_repo_list_failed = false;
 
     for (repo_id, repo_name) in &enabled_repos {
         let fallback_project_id = repo_id.trim().parse::<i64>().unwrap_or(0);
@@ -757,6 +766,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                 repo_summaries.insert(repo_id.clone(), format!("opened: {parsed}"));
             }
             Err(error) => {
+                any_repo_list_failed = true;
                 repo_summaries.insert(repo_id.clone(), format!("错误: {error}"));
                 let mut runtime = state.inner.lock().await;
                 if runtime.running {
@@ -777,19 +787,21 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     }
 
     runtime.repo_summaries = repo_summaries;
-    cleanup_stale(&mut runtime, &opened_keys);
+    if should_cleanup_stale(any_repo_list_failed) {
+        cleanup_stale(&mut runtime, &opened_keys);
 
-    if let Some(tracked) = runtime.current.clone() {
-        if !opened_keys.contains(&(tracked.project_id, tracked.local_id)) {
-            append_log(
-                &mut runtime,
-                "info",
-                format!(
-                    "跟踪中的 !{} 已不在 opened，清除当前跟踪",
-                    tracked.local_id
-                ),
-            );
-            runtime.current = None;
+        if let Some(tracked) = runtime.current.clone() {
+            if !opened_keys.contains(&(tracked.project_id, tracked.local_id)) {
+                append_log(
+                    &mut runtime,
+                    "info",
+                    format!(
+                        "跟踪中的 !{} 已不在 opened，清除当前跟踪",
+                        tracked.local_id
+                    ),
+                );
+                runtime.current = None;
+            }
         }
     }
 
@@ -1005,6 +1017,16 @@ mod tests {
     #[test]
     fn pick_earliest_empty_returns_none() {
         assert!(pick_earliest_by_created_at(&[]).is_none());
+    }
+
+    #[test]
+    fn should_cleanup_when_all_repo_lists_ok() {
+        assert!(should_cleanup_stale(false));
+    }
+
+    #[test]
+    fn should_skip_cleanup_when_any_repo_list_failed() {
+        assert!(!should_cleanup_stale(true));
     }
 
     #[test]
