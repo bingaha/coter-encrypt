@@ -180,12 +180,14 @@ fn save_http_proxy_config(
     config: http_client::HttpProxyConfig,
     proxy_state: tauri::State<'_, http_client::HttpProxyState>,
     monitor_state: tauri::State<'_, pipeline_monitor::MonitorState>,
+    merge_state: tauri::State<'_, merge_monitor::MergeMonitorState>,
 ) -> Result<http_client::HttpProxyConfig, String> {
     let config = http_client::normalize_config(config)?;
     http_client::save_http_proxy_config_to_disk(&config)?;
     proxy_state.set(config.clone());
     let client = http_client::build_http_client(Duration::from_secs(20), &config)?;
-    monitor_state.replace_http_client(client);
+    monitor_state.replace_http_client(client.clone());
+    merge_state.replace_http_client(client);
     Ok(config)
 }
 
@@ -322,6 +324,30 @@ async fn clear_merge_monitor_logs(
     merge_monitor::clear_merge_monitor_logs(app, state).await
 }
 
+#[tauri::command]
+async fn start_merge_monitor(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+) -> Result<merge_monitor::MergeSnapshot, String> {
+    merge_monitor::start_merge_monitor(app, state).await
+}
+
+#[tauri::command]
+async fn stop_merge_monitor(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+) -> Result<merge_monitor::MergeSnapshot, String> {
+    merge_monitor::stop_merge_monitor(app, state).await
+}
+
+#[tauri::command]
+fn open_merge_request_page(
+    app: tauri::AppHandle,
+    detail_url: String,
+) -> Result<(), String> {
+    merge_monitor::open_merge_request_page(app, detail_url)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -341,6 +367,7 @@ fn main() {
                 let _ = window.set_title(&format!("加解密工具 v{version}"));
             }
             pipeline_monitor::spawn_background(app.handle().clone());
+            merge_monitor::spawn_background(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -384,8 +411,11 @@ fn main() {
             open_pipeline_run_page,
             load_merge_monitor_config,
             save_merge_monitor_config,
+            start_merge_monitor,
+            stop_merge_monitor,
             get_merge_monitor_snapshot,
-            clear_merge_monitor_logs
+            clear_merge_monitor_logs,
+            open_merge_request_page
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoterEncrypt");

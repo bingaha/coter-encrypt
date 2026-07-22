@@ -1,8 +1,8 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::PathBuf,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -10,14 +10,19 @@ use directories::ProjectDirs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 
 const CONFIG_FILE_NAME: &str = "yunxiao-merge.json";
 const STATE_EVENT: &str = "merge-monitor-state";
 const MAX_LOGS: usize = 200;
-#[allow(dead_code)]
 const OPENAPI_BASE: &str = "https://openapi-rdc.aliyuncs.com";
+
+const TOKEN_HINT: &str = "请先配置云效 Token";
+const ORG_HINT: &str = "请先配置组织 ID";
+const REPO_LIST_HINT: &str = "请先配置仓库列表";
+const ENABLED_HINT: &str = "请至少启用一个仓库";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,23 +122,19 @@ struct MergeRuntime {
     config: MergeMonitorConfig,
     running: bool,
     current: Option<TrackedMerge>,
-    /// Reserved for the state machine (Task 4); only initialized in this scaffold.
-    #[allow(dead_code)]
     processed: HashSet<(i64, i64)>,
     todos: Vec<MergeTodo>,
     logs: VecDeque<LogEntry>,
+    repo_summaries: HashMap<String, String>,
 }
 
 pub struct MergeMonitorState {
     inner: Mutex<MergeRuntime>,
-    /// Background loop gate; used when Task 4 adds `spawn_background`.
-    #[allow(dead_code)]
     pub loop_started: AtomicBool,
     http: std::sync::Mutex<Client>,
 }
 
 impl MergeMonitorState {
-    #[allow(dead_code)]
     pub fn http_client(&self) -> Client {
         self.http
             .lock()
@@ -141,7 +142,6 @@ impl MergeMonitorState {
             .clone()
     }
 
-    #[allow(dead_code)]
     pub fn replace_http_client(&self, client: Client) {
         *self.http.lock().unwrap_or_else(|e| e.into_inner()) = client;
     }
@@ -207,7 +207,11 @@ fn build_snapshot(runtime: &MergeRuntime) -> MergeSnapshot {
             repository_id: repo.repository_id.clone(),
             name: repo.name.clone(),
             enabled: repo.enabled,
-            summary: String::new(),
+            summary: runtime
+                .repo_summaries
+                .get(&repo.repository_id)
+                .cloned()
+                .unwrap_or_default(),
         })
         .collect();
 
@@ -243,10 +247,35 @@ pub fn create_state() -> MergeMonitorState {
             processed: HashSet::new(),
             todos: Vec::new(),
             logs: VecDeque::new(),
+            repo_summaries: HashMap::new(),
         }),
         loop_started: AtomicBool::new(false),
         http: std::sync::Mutex::new(http),
     }
+}
+
+fn validate_merge_monitor_config(config: &MergeMonitorConfig) -> Result<(), String> {
+    if config.token.trim().is_empty() {
+        return Err(TOKEN_HINT.to_string());
+    }
+    if config.org_id.trim().is_empty() {
+        return Err(ORG_HINT.to_string());
+    }
+    let has_repo = config
+        .repositories
+        .iter()
+        .any(|item| !item.repository_id.trim().is_empty());
+    if !has_repo {
+        return Err(REPO_LIST_HINT.to_string());
+    }
+    if !config
+        .repositories
+        .iter()
+        .any(|item| item.enabled && !item.repository_id.trim().is_empty())
+    {
+        return Err(ENABLED_HINT.to_string());
+    }
+    Ok(())
 }
 
 pub async fn load_merge_monitor_config(
@@ -289,9 +318,8 @@ pub async fn clear_merge_monitor_logs(
     Ok(snapshot)
 }
 
-/// Internal MR candidate used by list filtering / earliest pick (wired in Task 4).
+/// Internal MR candidate used by list filtering / earliest pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 struct Candidate {
     project_id: i64,
     local_id: i64,
@@ -302,7 +330,6 @@ struct Candidate {
     created_at: String,
 }
 
-#[allow(dead_code)]
 fn is_ai_review_complete(comments: &[Value]) -> bool {
     comments.iter().any(|c| {
         let name = c
@@ -314,7 +341,6 @@ fn is_ai_review_complete(comments: &[Value]) -> bool {
     })
 }
 
-#[allow(dead_code)]
 fn filter_whitelist_candidates(
     items: &[Candidate],
     allowed_authors: &[String],
@@ -338,14 +364,12 @@ fn filter_whitelist_candidates(
         .collect()
 }
 
-#[allow(dead_code)]
 fn parse_created_at(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
-#[allow(dead_code)]
 fn pick_earliest_by_created_at(candidates: &[Candidate]) -> Option<Candidate> {
     candidates
         .iter()
@@ -361,14 +385,499 @@ fn pick_earliest_by_created_at(candidates: &[Candidate]) -> Option<Candidate> {
         .map(|(_, c)| c.clone())
 }
 
-#[allow(dead_code)]
-fn cleanup_stale(
-    processed: &mut HashSet<(i64, i64)>,
-    todos: &mut Vec<MergeTodo>,
-    opened_keys: &HashSet<(i64, i64)>,
-) {
-    processed.retain(|k| opened_keys.contains(k));
-    todos.retain(|t| opened_keys.contains(&(t.project_id, t.local_id)));
+fn cleanup_stale(runtime: &mut MergeRuntime, opened_keys: &HashSet<(i64, i64)>) {
+    runtime.processed.retain(|k| opened_keys.contains(k));
+    runtime
+        .todos
+        .retain(|t| opened_keys.contains(&(t.project_id, t.local_id)));
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn values_as_array(data: &Value) -> Vec<Value> {
+    if let Some(arr) = data.as_array() {
+        return arr.clone();
+    }
+    for key in ["result", "data", "list", "items"] {
+        if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
+            return arr.clone();
+        }
+    }
+    Vec::new()
+}
+
+fn candidate_from_change_request(
+    item: &Value,
+    fallback_project_id: i64,
+    repo_name: &str,
+) -> Option<Candidate> {
+    let project_id = item
+        .get("projectId")
+        .and_then(json_i64)
+        .unwrap_or(fallback_project_id);
+    let local_id = item.get("localId").and_then(json_i64)?;
+    let author_name = item
+        .pointer("/author/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = item
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let detail_url = item
+        .get("detailUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let created_at = item
+        .get("createdAt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(Candidate {
+        project_id,
+        local_id,
+        author_name,
+        title,
+        repo_name: repo_name.to_string(),
+        detail_url,
+        created_at,
+    })
+}
+
+fn tracked_from_candidate(c: &Candidate) -> TrackedMerge {
+    TrackedMerge {
+        project_id: c.project_id,
+        local_id: c.local_id,
+        author_name: c.author_name.clone(),
+        title: c.title.clone(),
+        repo_name: c.repo_name.clone(),
+        detail_url: c.detail_url.clone(),
+        created_at: c.created_at.clone(),
+    }
+}
+
+fn todo_from_tracked(t: &TrackedMerge) -> MergeTodo {
+    MergeTodo {
+        project_id: t.project_id,
+        local_id: t.local_id,
+        author_name: t.author_name.clone(),
+        title: t.title.clone(),
+        repo_name: t.repo_name.clone(),
+        detail_url: t.detail_url.clone(),
+    }
+}
+
+fn open_url_fallback(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("fallback open failed: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("fallback open failed: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("fallback open failed: {e}"))?;
+        Ok(())
+    }
+}
+
+async fn call_open_api(
+    http: &Client,
+    token: &str,
+    path: &str,
+    method: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let url = format!("{OPENAPI_BASE}{path}");
+    let builder = match method {
+        "POST" => http.post(&url),
+        _ => http.get(&url),
+    };
+    let mut request = builder
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("x-yunxiao-token", token);
+    if let Some(payload) = body {
+        request = request.json(&payload);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "Request timeout".to_string()
+            } else {
+                format!("Network error: {error}")
+            }
+        })?;
+
+    let status_code = response.status().as_u16();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|error| format!("Read body failed: {error}"))?;
+
+    if !(200..300).contains(&status_code) {
+        return Err(format!("HTTP {status_code}, body: {body_text}"));
+    }
+
+    serde_json::from_str::<Value>(&body_text).map_err(|error| format!("Invalid JSON: {error}"))
+}
+
+async fn list_opened_change_requests(
+    http: &Client,
+    token: &str,
+    org: &str,
+    repo_id: &str,
+) -> Result<Vec<Value>, String> {
+    let path = format!(
+        "/oapi/v1/codeup/organizations/{org}/changeRequests?projectIds={repo_id}&state=opened"
+    );
+    let data = call_open_api(http, token, &path, "GET", None).await?;
+    Ok(values_as_array(&data))
+}
+
+async fn list_change_request_comments(
+    http: &Client,
+    token: &str,
+    org: &str,
+    project_id: i64,
+    local_id: i64,
+) -> Result<Vec<Value>, String> {
+    let path = format!(
+        "/oapi/v1/codeup/organizations/{org}/repositories/{project_id}/changeRequests/{local_id}/comments/list"
+    );
+    let data = call_open_api(http, token, &path, "POST", Some(serde_json::json!({}))).await?;
+    Ok(values_as_array(&data))
+}
+
+async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorState) -> u64 {
+    let (running, token, org_id, list_poll, ai_poll, allowed_authors, enabled_repos, current) = {
+        let runtime = state.inner.lock().await;
+        if !runtime.running {
+            return 1;
+        }
+        let enabled_repos: Vec<(String, String)> = runtime
+            .config
+            .repositories
+            .iter()
+            .filter(|r| r.enabled && !r.repository_id.trim().is_empty())
+            .map(|r| (r.repository_id.clone(), r.name.clone()))
+            .collect();
+        (
+            runtime.running,
+            runtime.config.token.clone(),
+            runtime.config.org_id.clone(),
+            runtime.config.list_poll_interval_secs.max(5),
+            runtime.config.ai_poll_interval_secs.max(3),
+            runtime.config.allowed_authors.clone(),
+            enabled_repos,
+            runtime.current.clone(),
+        )
+    };
+
+    if !running {
+        return 1;
+    }
+
+    if token.trim().is_empty() || org_id.trim().is_empty() {
+        let mut runtime = state.inner.lock().await;
+        if runtime.running {
+            append_log(
+                &mut runtime,
+                "error",
+                "Token 或组织 ID 为空，请检查配置后重新启动",
+            );
+            emit_snapshot(app, &runtime);
+        }
+        return list_poll;
+    }
+
+    // Track AI for current MR.
+    if let Some(tracked) = current {
+        // Mid-track disappear: if this MR left opened, clear current only.
+        match list_opened_change_requests(http, &token, &org_id, &tracked.project_id.to_string())
+            .await
+        {
+            Ok(items) => {
+                let still_open = items.iter().any(|item| {
+                    let project_id = item
+                        .get("projectId")
+                        .and_then(json_i64)
+                        .unwrap_or(tracked.project_id);
+                    let local_id = item.get("localId").and_then(json_i64);
+                    local_id == Some(tracked.local_id) && project_id == tracked.project_id
+                });
+                if !still_open {
+                    let mut runtime = state.inner.lock().await;
+                    if !runtime.running {
+                        return 1;
+                    }
+                    if runtime
+                        .current
+                        .as_ref()
+                        .map(|c| c.project_id == tracked.project_id && c.local_id == tracked.local_id)
+                        .unwrap_or(false)
+                    {
+                        append_log(
+                            &mut runtime,
+                            "info",
+                            format!(
+                                "跟踪中的 !{} 已不在 opened，清除当前跟踪",
+                                tracked.local_id
+                            ),
+                        );
+                        runtime.current = None;
+                        emit_snapshot(app, &runtime);
+                    }
+                    return 1;
+                }
+            }
+            Err(error) => {
+                let mut runtime = state.inner.lock().await;
+                if runtime.running {
+                    append_log(
+                        &mut runtime,
+                        "warn",
+                        format!(
+                            "检查 !{} opened 状态失败，继续拉评论：{}",
+                            tracked.local_id, error
+                        ),
+                    );
+                    emit_snapshot(app, &runtime);
+                }
+            }
+        }
+
+        match list_change_request_comments(
+            http,
+            &token,
+            &org_id,
+            tracked.project_id,
+            tracked.local_id,
+        )
+        .await
+        {
+            Ok(comments) => {
+                if is_ai_review_complete(&comments) {
+                    crate::system_notify::show_system_notification(
+                        app,
+                        "合并监控 · AI评审完成",
+                        &format!(
+                            "{} · {} · {}",
+                            tracked.author_name, tracked.title, tracked.repo_name
+                        ),
+                    );
+                    let mut runtime = state.inner.lock().await;
+                    if !runtime.running {
+                        return 1;
+                    }
+                    if runtime
+                        .current
+                        .as_ref()
+                        .map(|c| c.project_id == tracked.project_id && c.local_id == tracked.local_id)
+                        .unwrap_or(false)
+                    {
+                        runtime
+                            .processed
+                            .insert((tracked.project_id, tracked.local_id));
+                        runtime.todos.push(todo_from_tracked(&tracked));
+                        runtime.current = None;
+                        append_log(
+                            &mut runtime,
+                            "info",
+                            format!(
+                                "AI评审完成：!{} {} · {}",
+                                tracked.local_id, tracked.title, tracked.author_name
+                            ),
+                        );
+                        emit_snapshot(app, &runtime);
+                    }
+                    return 1;
+                }
+
+                return ai_poll;
+            }
+            Err(error) => {
+                let mut runtime = state.inner.lock().await;
+                if runtime.running {
+                    append_log(
+                        &mut runtime,
+                        "error",
+                        format!("拉取 !{} 评论失败：{}", tracked.local_id, error),
+                    );
+                    emit_snapshot(app, &runtime);
+                }
+                return ai_poll;
+            }
+        }
+    }
+
+    // No current: scan opened lists.
+    let mut opened_keys = HashSet::new();
+    let mut all_candidates = Vec::new();
+    let mut repo_summaries = HashMap::new();
+
+    for (repo_id, repo_name) in &enabled_repos {
+        let fallback_project_id = repo_id.trim().parse::<i64>().unwrap_or(0);
+        match list_opened_change_requests(http, &token, &org_id, repo_id.trim()).await {
+            Ok(items) => {
+                let mut parsed = 0usize;
+                for item in &items {
+                    if let Some(candidate) =
+                        candidate_from_change_request(item, fallback_project_id, repo_name)
+                    {
+                        opened_keys.insert((candidate.project_id, candidate.local_id));
+                        all_candidates.push(candidate);
+                        parsed += 1;
+                    }
+                }
+                repo_summaries.insert(repo_id.clone(), format!("opened: {parsed}"));
+            }
+            Err(error) => {
+                repo_summaries.insert(repo_id.clone(), format!("错误: {error}"));
+                let mut runtime = state.inner.lock().await;
+                if runtime.running {
+                    append_log(
+                        &mut runtime,
+                        "error",
+                        format!("仓库 {repo_name}({repo_id}) 拉取列表失败：{error}"),
+                    );
+                    emit_snapshot(app, &runtime);
+                }
+            }
+        }
+    }
+
+    let mut runtime = state.inner.lock().await;
+    if !runtime.running {
+        return 1;
+    }
+
+    runtime.repo_summaries = repo_summaries;
+    cleanup_stale(&mut runtime, &opened_keys);
+
+    if let Some(tracked) = runtime.current.clone() {
+        if !opened_keys.contains(&(tracked.project_id, tracked.local_id)) {
+            append_log(
+                &mut runtime,
+                "info",
+                format!(
+                    "跟踪中的 !{} 已不在 opened，清除当前跟踪",
+                    tracked.local_id
+                ),
+            );
+            runtime.current = None;
+        }
+    }
+
+    if runtime.current.is_some() {
+        emit_snapshot(app, &runtime);
+        return ai_poll;
+    }
+
+    let filtered =
+        filter_whitelist_candidates(&all_candidates, &allowed_authors, &runtime.processed);
+    if let Some(picked) = pick_earliest_by_created_at(&filtered) {
+        append_log(
+            &mut runtime,
+            "info",
+            format!(
+                "开始跟踪 !{} {} · {} · {}",
+                picked.local_id, picked.title, picked.author_name, picked.repo_name
+            ),
+        );
+        runtime.current = Some(tracked_from_candidate(&picked));
+        emit_snapshot(app, &runtime);
+        return ai_poll;
+    }
+
+    emit_snapshot(app, &runtime);
+    list_poll
+}
+
+pub fn spawn_background(app: AppHandle) {
+    let state = app.state::<MergeMonitorState>();
+    if state
+        .loop_started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let state = app_handle.state::<MergeMonitorState>();
+            let http = state.http_client();
+            let sleep_secs = run_monitor_cycle(&app_handle, &http, &state).await;
+            tokio::time::sleep(Duration::from_secs(sleep_secs.max(1))).await;
+        }
+    });
+}
+
+pub async fn start_merge_monitor(
+    app: AppHandle,
+    state: State<'_, MergeMonitorState>,
+) -> Result<MergeSnapshot, String> {
+    let mut runtime = state.inner.lock().await;
+    if runtime.running {
+        return Err("合并监控已在运行".to_string());
+    }
+    validate_merge_monitor_config(&runtime.config)?;
+    runtime.running = true;
+    append_log(&mut runtime, "info", "合并监控已启动");
+    let snapshot = build_snapshot(&runtime);
+    emit_snapshot(&app, &runtime);
+    Ok(snapshot)
+}
+
+pub async fn stop_merge_monitor(
+    app: AppHandle,
+    state: State<'_, MergeMonitorState>,
+) -> Result<MergeSnapshot, String> {
+    let mut runtime = state.inner.lock().await;
+    runtime.running = false;
+    runtime.current = None;
+    append_log(&mut runtime, "info", "合并监控已停止");
+    let snapshot = build_snapshot(&runtime);
+    emit_snapshot(&app, &runtime);
+    Ok(snapshot)
+}
+
+pub fn open_merge_request_page(app: AppHandle, detail_url: String) -> Result<(), String> {
+    let url = detail_url.trim().to_string();
+    if url.is_empty() {
+        return Err("合并请求链接为空".to_string());
+    }
+    match app.opener().open_url(url.as_str(), None::<&str>) {
+        Ok(()) => Ok(()),
+        Err(opener_error) => open_url_fallback(&url)
+            .map_err(|fallback_error| format!("打开页面失败：{opener_error}；{fallback_error}")),
+    }
 }
 
 #[cfg(test)]
@@ -504,7 +1013,7 @@ mod tests {
         processed.insert((1, 24));
         processed.insert((1, 25));
 
-        let mut todos = vec![
+        let todos = vec![
             MergeTodo {
                 project_id: 1,
                 local_id: 24,
@@ -526,11 +1035,20 @@ mod tests {
         let mut opened = HashSet::new();
         opened.insert((1, 25));
 
-        cleanup_stale(&mut processed, &mut todos, &opened);
+        let mut runtime = MergeRuntime {
+            config: MergeMonitorConfig::default(),
+            running: false,
+            current: None,
+            processed,
+            todos,
+            logs: VecDeque::new(),
+            repo_summaries: HashMap::new(),
+        };
+        cleanup_stale(&mut runtime, &opened);
 
-        assert!(!processed.contains(&(1, 24)));
-        assert!(processed.contains(&(1, 25)));
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].local_id, 25);
+        assert!(!runtime.processed.contains(&(1, 24)));
+        assert!(runtime.processed.contains(&(1, 25)));
+        assert_eq!(runtime.todos.len(), 1);
+        assert_eq!(runtime.todos[0].local_id, 25);
     }
 }
