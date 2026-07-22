@@ -21,6 +21,7 @@ import {
  ServerOutline,
  SwapHorizontalOutline,
  GitNetworkOutline,
+ GitMergeOutline,
  GlobeOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
@@ -29,6 +30,7 @@ import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig
 import { useHttpProxyConfig } from '@/composables/useHttpProxyConfig'
 import { listen } from '@tauri-apps/api/event'
 import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
+import { getMergeMonitorSnapshot } from '@/api/mergeMonitor'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -105,6 +107,15 @@ const toolEntries = [
  status: '可用',
  description: '监控云效流水线人工卡点与分支选择，支持自动审批与后台轮询。',
  capabilities: ['多流水线', '人工卡点', '自动模式']
+ },
+ {
+ id: 'merge-monitor',
+ title: '合并监控',
+ routeName: 'MergeMonitorTool',
+ icon: GitMergeOutline,
+ status: '可用',
+ description: '监控云效合并请求 AI 评审完成，写入待办并系统通知。',
+ capabilities: ['多仓库', '作者白名单', 'AI评审']
  }
 ]
 
@@ -113,10 +124,21 @@ const pipelineMonitorMode = ref('idle')
 let unlistenPipeline = null
 let pipelinePollTimer = null
 
+const mergeMonitorRunning = ref(false)
+const mergeTodoCount = ref(0)
+let unlistenMerge = null
+let mergePollTimer = null
+
 const pipelineStatusLabel = computed(() => {
   if (pipelineMonitorMode.value === 'loop') return '循环监控'
   if (pipelineMonitorMode.value === 'single') return '单次监控'
   if (pipelinePendingCount.value > 0) return `待办 ${pipelinePendingCount.value}`
+  return '可用'
+})
+
+const mergeStatusLabel = computed(() => {
+  if (mergeMonitorRunning.value) return '监控中'
+  if (mergeTodoCount.value > 0) return `待办 ${mergeTodoCount.value}`
   return '可用'
 })
 
@@ -125,6 +147,16 @@ const refreshPipelineBadge = async () => {
     const { data } = await getPipelineMonitorSnapshot()
     pipelinePendingCount.value = data?.pendingCount || 0
     pipelineMonitorMode.value = data?.mode || (data?.running ? 'loop' : 'idle')
+  } catch {
+    // ignore
+  }
+}
+
+const refreshMergeBadge = async () => {
+  try {
+    const { data } = await getMergeMonitorSnapshot()
+    mergeMonitorRunning.value = !!data?.running
+    mergeTodoCount.value = data?.todoCount || 0
   } catch {
     // ignore
   }
@@ -152,22 +184,33 @@ onMounted(async () => {
  checkConnection()
  }
  await loadProxyConfig()
- await refreshPipelineBadge()
+ await Promise.all([refreshPipelineBadge(), refreshMergeBadge()])
  try {
  unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
  pipelinePendingCount.value = event.payload?.pendingCount || 0
  pipelineMonitorMode.value =
- event.payload?.mode || (event.payload?.running ? 'loop' : 'idle')
+   event.payload?.mode || (event.payload?.running ? 'loop' : 'idle')
+ })
+ } catch {
+ // ignore
+ }
+ try {
+ unlistenMerge = await listen('merge-monitor-state', (event) => {
+ mergeMonitorRunning.value = !!event.payload?.running
+ mergeTodoCount.value = event.payload?.todoCount || 0
  })
  } catch {
  // ignore
  }
  pipelinePollTimer = setInterval(refreshPipelineBadge, 5000)
+ mergePollTimer = setInterval(refreshMergeBadge, 5000)
 })
 
 onBeforeUnmount(() => {
  if (unlistenPipeline) unlistenPipeline()
  if (pipelinePollTimer) clearInterval(pipelinePollTimer)
+ if (unlistenMerge) unlistenMerge()
+ if (mergePollTimer) clearInterval(mergePollTimer)
 })
 </script>
 
@@ -272,12 +315,16 @@ onBeforeUnmount(() => {
  class="tool-status"
  :class="{
  'is-running':
- tool.id === 'pipeline-monitor' &&
- (pipelineMonitorMode === 'loop' || pipelineMonitorMode === 'single')
+ (tool.id === 'pipeline-monitor' &&
+ (pipelineMonitorMode === 'loop' || pipelineMonitorMode === 'single')) ||
+ (tool.id === 'merge-monitor' && mergeMonitorRunning)
  }"
  >
  <template v-if="tool.id === 'pipeline-monitor'">
  {{ pipelineStatusLabel }}
+ </template>
+ <template v-else-if="tool.id === 'merge-monitor'">
+ {{ mergeStatusLabel }}
  </template>
  <template v-else>
  {{ tool.status }}
