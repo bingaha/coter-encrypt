@@ -6,6 +6,7 @@ import CertQueryPage from '../views/CertQueryPage.vue'
 import RobotFeedbackPage from '../views/RobotFeedbackPage.vue'
 import OssTransferPage from '../views/OssTransferPage.vue'
 import PipelineMonitorPage from '../views/PipelineMonitorPage.vue'
+import MergeMonitorPage from '../views/MergeMonitorPage.vue'
 
 const routes = [
   {
@@ -42,6 +43,11 @@ const routes = [
     path: '/pipeline-monitor',
     name: 'PipelineMonitorTool',
     component: PipelineMonitorPage
+  },
+  {
+    path: '/merge-monitor',
+    name: 'MergeMonitorTool',
+    component: MergeMonitorPage
   }
 ]
 
