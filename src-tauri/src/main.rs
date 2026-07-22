@@ -6,6 +6,7 @@ mod crypto;
 mod executor;
 mod har;
 mod http_client;
+mod merge_monitor;
 mod oss_transfer;
 mod pipeline_monitor;
 mod project_store;
@@ -290,6 +291,37 @@ fn open_pipeline_run_page(
     pipeline_monitor::open_pipeline_run_page(app, pipeline_id, run_id)
 }
 
+#[tauri::command]
+async fn load_merge_monitor_config(
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+) -> Result<merge_monitor::MergeMonitorConfig, String> {
+    merge_monitor::load_merge_monitor_config(state).await
+}
+
+#[tauri::command]
+async fn save_merge_monitor_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+    config: merge_monitor::MergeMonitorConfig,
+) -> Result<merge_monitor::MergeMonitorConfig, String> {
+    merge_monitor::save_merge_monitor_config(app, state, config).await
+}
+
+#[tauri::command]
+async fn get_merge_monitor_snapshot(
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+) -> Result<merge_monitor::MergeSnapshot, String> {
+    merge_monitor::get_merge_monitor_snapshot(state).await
+}
+
+#[tauri::command]
+async fn clear_merge_monitor_logs(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, merge_monitor::MergeMonitorState>,
+) -> Result<merge_monitor::MergeSnapshot, String> {
+    merge_monitor::clear_merge_monitor_logs(app, state).await
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -302,6 +334,7 @@ fn main() {
         }))
         .manage(http_client::create_state())
         .manage(pipeline_monitor::create_state())
+        .manage(merge_monitor::create_state())
         .setup(|app| {
             let version = env!("CARGO_PKG_VERSION");
             if let Some(window) = app.get_webview_window("main") {
@@ -348,7 +381,11 @@ fn main() {
             get_pipeline_monitor_snapshot,
             respond_pipeline_monitor_action,
             clear_pipeline_monitor_logs,
-            open_pipeline_run_page
+            open_pipeline_run_page,
+            load_merge_monitor_config,
+            save_merge_monitor_config,
+            get_merge_monitor_snapshot,
+            clear_merge_monitor_logs
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoterEncrypt");
