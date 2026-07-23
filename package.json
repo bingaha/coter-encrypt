@@ -1,7 +1,7 @@
 {
  "name": "coter-encrypt-desktop",
  "private": true,
- "version": "0.1.14",
+ "version": "0.1.15",
  "type": "module",
  "scripts": {
  "frontend:dev": "npm --prefix frontend run dev -- --host 127.0.0.1",

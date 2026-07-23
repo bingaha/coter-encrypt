@@ -64,3 +64,159 @@ Debian/Linux 桌面图标通常对应：
 ```text
 target/release/CoterEncrypt
 ```
+
+---
+
+## 生产包常见问题（必读）
+
+### 1. 打开 deb / 安装后应用显示 `Could not connect to 127.0.0.1: Connection refused`
+
+#### 这是什么
+
+Tauri 有两种加载前端的方式：
+
+| 模式 | 命令 / 产物 | 前端从哪来 |
+|------|-------------|------------|
+| 开发 | `npm run tauri:dev` → 通常是 `target/debug/CoterEncrypt` | 连接 `tauri.conf.json` 里的 `devUrl`（当前为 `http://127.0.0.1:5173` Vite） |
+| 生产 | `npm run tauri:build` → deb / nsis / `target/release/CoterEncrypt` | 加载打包进应用的 `frontendDist`（`frontend/dist`）静态资源 |
+
+**Connection refused = 实际跑起来的是开发态二进制（或等价配置），去连本机 5173，但 Vite 没在跑。**  
+这**不是**业务 API 又改回 HTTP，而是 WebView 连错了前端资源入口。
+
+#### 为什么“改代码后有时又会遇到”
+
+常见触发方式（改代码本身不会随机坏掉，而是启动路径被悄悄换掉了）：
+
+1. **用户级 `.desktop` 覆盖了 deb 安装的入口（本仓库曾踩过）**  
+   Linux/GNOME 优先使用：
+
+   ```text
+   ~/.local/share/applications/CoterEncrypt.desktop
+   ```
+
+   若其中 `Exec=` 指向 `target/debug/CoterEncrypt`，从应用菜单点开就会连 `127.0.0.1:5173`。  
+   deb 装好了也没用——菜单根本没跑 `/usr/bin/CoterEncrypt`。
+
+2. **直接启动了 debug 二进制**  
+   例如 `target/debug/CoterEncrypt`、`cargo run`（未走 release bundle），且没有同时开着 `tauri:dev` / Vite。
+
+3. **误把开发产物当安装包验证**  
+   应用菜单、命令行别名、旧快捷方式仍指向 workspace 里的 debug 路径。
+
+#### 如何避免 / 排查
+
+**禁止：**
+
+- 在代码或脚本里向 `~/.local/share/applications/` 写入会覆盖正式入口的 `CoterEncrypt.desktop`（尤其 `Exec=.../target/debug/...`、`Icon=utilities-terminal` 这类临时文件）。
+- 用 debug 二进制验证“用户下载 deb 后能否用”。
+
+**生产验证只认：**
+
+```bash
+npm run tauri:build
+# 安装生成的 .deb，或直接运行：
+./target/release/CoterEncrypt
+```
+
+**若再次出现 Connection refused，按顺序查：**
+
+```bash
+# 1) 是否存在用户级覆盖（有则删掉或改掉）
+ls -l ~/.local/share/applications/CoterEncrypt.desktop
+cat ~/.local/share/applications/CoterEncrypt.desktop
+
+# 2) 当前启动的到底是哪个二进制
+which CoterEncrypt
+readlink -f "$(which CoterEncrypt)"
+# 菜单启动可用：ps -ef | rg CoterEncrypt
+
+# 3) 正式安装入口应类似
+# Exec=CoterEncrypt
+# Icon=CoterEncrypt
+# 文件在：/usr/share/applications/CoterEncrypt.desktop
+```
+
+删除错误覆盖后，必要时注销/重登或执行 `update-desktop-database ~/.local/share/applications`，再从应用菜单打开。
+
+---
+
+### 2. 应用图标变成“命令行 / 终端”样式，而不是绿色锁
+
+#### 原因
+
+正式图标来自 `src-tauri/icons/`（绿色锁），deb 安装后一般为：
+
+```text
+Icon=CoterEncrypt
+→ /usr/share/icons/hicolor/*/apps/CoterEncrypt.png
+```
+
+若菜单显示终端图标，几乎总是用户级 desktop 覆盖了系统项，例如：
+
+```ini
+Icon=utilities-terminal
+```
+
+（本仓库在调试 Linux 通知时曾误写过该文件；与“改 UI 代码导致图标资源丢失”无关。）
+
+#### 如何避免 / 修复
+
+1. **禁止**写入错误的覆盖文件：`Exec=.../target/debug/...` 或 `Icon=utilities-terminal`。  
+2. 若必须使用用户级 `~/.local/share/applications/CoterEncrypt.desktop`（见下一节），必须：  
+   - `Exec=CoterEncrypt`（系统 PATH / deb 安装的正式二进制）  
+   - `Icon=CoterEncrypt`（绿色锁）  
+   - `Categories=Utility;`（非空，否则 GNOME 应用网格可能不显示）  
+3. 不要删掉入口后又不补 Categories——deb 默认模板若 `Categories=` 为空，删掉用户覆盖后菜单里会“消失”。
+
+### 2.1 应用菜单里完全没有 CoterEncrypt
+
+#### 原因
+
+1. 用户级错误 `.desktop` 被删掉后，系统项  
+   `/usr/share/applications/CoterEncrypt.desktop` 可能是 `Categories=` **空字符串**。  
+   GNOME 应用概览常因此不把应用放进网格（搜索有时也找不到）。  
+2. 桌面数据库未刷新 / Shell 缓存未更新。
+
+#### 修复（本机立即恢复）
+
+写入正确的用户级入口（覆盖空 Categories 的系统项）：
+
+```bash
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/CoterEncrypt.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=CoterEncrypt
+Comment=Coter Encrypt desktop application
+Exec=CoterEncrypt
+Icon=CoterEncrypt
+Terminal=false
+Categories=Utility;
+StartupWMClass=CoterEncrypt
+StartupNotify=false
+EOF
+update-desktop-database ~/.local/share/applications
+```
+
+然后打开应用菜单搜索 `CoterEncrypt`；若仍无，注销重登或 `Alt+F2` 输入 `r` 重启 GNOME Shell（X11）。
+
+#### 打包侧避免（以后打 deb）
+
+`tauri.conf.json` 的 `bundle.category` 应设为非空（如 `"Utility"`），保证生成的 `.desktop` 带 `Categories=`，不依赖用户手写覆盖。
+
+---
+
+### 3. 开发 vs 生产对照（防混用）
+
+```text
+开发：npm run tauri:dev
+  → WebView → http://127.0.0.1:5173（需 Vite）
+  → 二进制多在 target/debug/
+
+生产：npm run tauri:build / 安装 deb
+  → WebView → 内置 frontend/dist
+  → 二进制在 target/release/ 或 /usr/bin/CoterEncrypt
+  → 不依赖本机 5173
+```
+
+改功能后若要确认“用户双击能用”，必须以 **release / deb** 验证，不能只看 `tauri:dev` 页面是否正常。

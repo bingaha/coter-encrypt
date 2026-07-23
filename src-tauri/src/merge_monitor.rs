@@ -75,6 +75,33 @@ pub struct MergeTodo {
     pub title: String,
     pub repo_name: String,
     pub detail_url: String,
+    /// `completed` | `skipped`
+    pub ai_review_status: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiReviewOutcome {
+    Pending,
+    Completed,
+    Skipped,
+}
+
+impl AiReviewOutcome {
+    fn as_status_key(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "进行中",
+            Self::Completed => "已完成",
+            Self::Skipped => "已跳过",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,15 +372,29 @@ struct Candidate {
     created_at: String,
 }
 
-fn is_ai_review_complete(comments: &[Value]) -> bool {
-    comments.iter().any(|c| {
+fn classify_ai_review(comments: &[Value]) -> AiReviewOutcome {
+    let mut completed = false;
+    for c in comments {
         let name = c
             .pointer("/author/name")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        if name != "云效AI助手" {
+            continue;
+        }
         let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        name == "云效AI助手" && (content.contains("代码评审报告") || content.contains('🔎'))
-    })
+        if content.contains("智能评审已跳过") {
+            return AiReviewOutcome::Skipped;
+        }
+        if content.contains("代码评审报告") || content.contains('🔎') {
+            completed = true;
+        }
+    }
+    if completed {
+        AiReviewOutcome::Completed
+    } else {
+        AiReviewOutcome::Pending
+    }
 }
 
 fn filter_whitelist_candidates(
@@ -526,7 +567,7 @@ fn tracked_from_candidate(c: &Candidate) -> TrackedMerge {
     }
 }
 
-fn todo_from_tracked(t: &TrackedMerge) -> MergeTodo {
+fn todo_from_tracked(t: &TrackedMerge, outcome: AiReviewOutcome) -> MergeTodo {
     MergeTodo {
         project_id: t.project_id,
         local_id: t.local_id,
@@ -534,6 +575,7 @@ fn todo_from_tracked(t: &TrackedMerge) -> MergeTodo {
         title: t.title.clone(),
         repo_name: t.repo_name.clone(),
         detail_url: t.detail_url.clone(),
+        ai_review_status: outcome.as_status_key().to_string(),
     }
 }
 
@@ -720,6 +762,22 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
 
     // Track AI for current MR.
     if let Some(tracked) = current {
+        {
+            let mut runtime = state.inner.lock().await;
+            if !runtime.running {
+                return 1;
+            }
+            append_log(
+                &mut runtime,
+                "info",
+                format!(
+                    "查询 AI 评审状态：!{} {} · {}",
+                    tracked.local_id, tracked.title, tracked.repo_name
+                ),
+            );
+            emit_snapshot(app, &runtime);
+        }
+
         // Mid-track disappear: if this MR left opened, clear current only.
         match list_opened_change_requests(http, &token, &org_id, &tracked.project_id.to_string())
             .await
@@ -784,7 +842,8 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
         .await
         {
             Ok(comments) => {
-                if is_ai_review_complete(&comments) {
+                let outcome = classify_ai_review(&comments);
+                if !matches!(outcome, AiReviewOutcome::Pending) {
                     // Confirm under lock before notify/write so stop between fetch and
                     // write cannot notify without updating state (or after abandon).
                     let mut runtime = state.inner.lock().await;
@@ -797,7 +856,10 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         .map(|c| c.project_id == tracked.project_id && c.local_id == tracked.local_id)
                         .unwrap_or(false)
                     {
-                        let notify_title = "合并监控 · AI评审完成";
+                        let notify_title = match outcome {
+                            AiReviewOutcome::Skipped => "合并监控 · AI评审已跳过",
+                            _ => "合并监控 · AI评审完成",
+                        };
                         match crate::system_notify::show_system_notification(
                             app,
                             notify_title,
@@ -820,14 +882,17 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         runtime
                             .processed
                             .insert((tracked.project_id, tracked.local_id));
-                        runtime.todos.push(todo_from_tracked(&tracked));
+                        runtime.todos.push(todo_from_tracked(&tracked, outcome));
                         runtime.current = None;
                         append_log(
                             &mut runtime,
                             "info",
                             format!(
-                                "AI评审完成：!{} {} · {}",
-                                tracked.local_id, tracked.title, tracked.author_name
+                                "AI评审{}：!{} {} · {}",
+                                outcome.label(),
+                                tracked.local_id,
+                                tracked.title,
+                                tracked.author_name
                             ),
                         );
                         emit_snapshot(app, &runtime);
@@ -835,6 +900,20 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     return 1;
                 }
 
+                let mut runtime = state.inner.lock().await;
+                if runtime.running {
+                    append_log(
+                        &mut runtime,
+                        "info",
+                        format!(
+                            "AI 评审未完成：!{} · 评论 {} 条，{} 秒后重试",
+                            tracked.local_id,
+                            comments.len(),
+                            ai_poll
+                        ),
+                    );
+                    emit_snapshot(app, &runtime);
+                }
                 return ai_poll;
             }
             Err(error) => {
@@ -974,13 +1053,14 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
             &mut runtime,
             "info",
             format!(
-                "开始跟踪 !{} {} · {} · {}",
+                "开始跟踪 !{} {} · {} · {}；立即查询 AI 评审状态",
                 picked.local_id, picked.title, picked.author_name, picked.repo_name
             ),
         );
         runtime.current = Some(tracked_from_candidate(&picked));
         emit_snapshot(app, &runtime);
-        return ai_poll;
+        // 0 = 不睡眠，下一轮立刻拉评论（再进入 ai_poll 间隔）
+        return 0;
     }
 
     emit_snapshot(app, &runtime);
@@ -1003,7 +1083,9 @@ pub fn spawn_background(app: AppHandle) {
             let state = app_handle.state::<MergeMonitorState>();
             let http = state.http_client();
             let sleep_secs = run_monitor_cycle(&app_handle, &http, &state).await;
-            tokio::time::sleep(Duration::from_secs(sleep_secs.max(1))).await;
+            if sleep_secs > 0 {
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            }
         }
     });
 }
@@ -1107,7 +1189,7 @@ mod tests {
             "author": {"name": "云效AI助手"},
             "content": "## 🔎 代码评审报告\n..."
         })];
-        assert!(is_ai_review_complete(&comments));
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Completed);
     }
 
     #[test]
@@ -1116,7 +1198,7 @@ mod tests {
             "author": {"name": "张三"},
             "content": "LGTM"
         })];
-        assert!(!is_ai_review_complete(&comments));
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Pending);
     }
 
     #[test]
@@ -1125,7 +1207,7 @@ mod tests {
             "author": {"name": "云效AI助手"},
             "content": "代码评审报告：通过"
         })];
-        assert!(is_ai_review_complete(&comments));
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Completed);
     }
 
     #[test]
@@ -1134,7 +1216,25 @@ mod tests {
             "author": {"name": "云效AI助手"},
             "content": "🔎 已完成"
         })];
-        assert!(is_ai_review_complete(&comments));
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Completed);
+    }
+
+    #[test]
+    fn ai_skipped_when_assistant_says_skipped() {
+        let comments = vec![json!({
+            "author": {"name": "云效AI助手"},
+            "content": "智能评审已跳过：本次变更无需评审"
+        })];
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Skipped);
+    }
+
+    #[test]
+    fn ai_skipped_takes_priority_over_report_markers() {
+        let comments = vec![json!({
+            "author": {"name": "云效AI助手"},
+            "content": "智能评审已跳过\n🔎 代码评审报告"
+        })];
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Skipped);
     }
 
     #[test]
@@ -1143,7 +1243,7 @@ mod tests {
             "author": {"name": "云效AI助手"},
             "content": "正在评审中"
         })];
-        assert!(!is_ai_review_complete(&comments));
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Pending);
     }
 
     #[test]
@@ -1229,6 +1329,7 @@ mod tests {
                 title: "old".into(),
                 repo_name: "r".into(),
                 detail_url: "u".into(),
+                ai_review_status: "completed".into(),
             },
             MergeTodo {
                 project_id: 1,
@@ -1237,6 +1338,7 @@ mod tests {
                 title: "keep".into(),
                 repo_name: "r".into(),
                 detail_url: "u".into(),
+                ai_review_status: "skipped".into(),
             },
         ];
 

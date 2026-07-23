@@ -105,6 +105,17 @@ const levelLabel = (level) => {
   return map[level] || level
 }
 
+const aiReviewStatusLabel = (status) => {
+  if (status === 'skipped') return '已跳过'
+  if (status === 'completed') return '已完成'
+  return status || '已完成'
+}
+
+const aiReviewStatusTagType = (status) => {
+  if (status === 'skipped') return 'warning'
+  return 'success'
+}
+
 const applySnapshot = (data) => {
   if (!data) return
   snapshot.value = data
@@ -558,7 +569,7 @@ onBeforeUnmount(() => {
         <div class="panel-title">
           <div class="panel-title-copy">
             <strong>待办列表</strong>
-            <n-text depth="3" class="panel-hint">AI 已完成，可打开查看；打开不会移除</n-text>
+            <n-text depth="3" class="panel-hint">AI 已完成或已跳过，可打开查看；打开不会移除</n-text>
           </div>
           <n-tag v-if="snapshot.todoCount" type="warning" size="small">
             {{ snapshot.todoCount }}
@@ -566,7 +577,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="!todos.length" class="empty">
-          <n-text depth="3">暂无 AI 已完成的待办</n-text>
+          <n-text depth="3">暂无 AI 已完成或已跳过的待办</n-text>
         </div>
         <div v-else class="todo-list">
           <article
@@ -577,7 +588,9 @@ onBeforeUnmount(() => {
             <div class="todo-meta">
               <div class="card-heading">
                 <h3>{{ todo.title || '未命名合并请求' }}</h3>
-                <n-tag type="success" size="small">AI评审：已完成</n-tag>
+                <n-tag :type="aiReviewStatusTagType(todo.aiReviewStatus)" size="small">
+                  AI评审：{{ aiReviewStatusLabel(todo.aiReviewStatus) }}
+                </n-tag>
               </div>
               <n-text depth="3">
                 {{ todo.repoName || '-' }}
