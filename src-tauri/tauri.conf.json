@@ -1,7 +1,7 @@
 {
  "$schema": "https://schema.tauri.app/config/2",
  "productName": "CoterEncrypt",
- "version": "0.1.15",
+ "version": "0.1.16",
  "identifier": "com.coter.encrypt",
  "build": {
  "beforeDevCommand": "npm run frontend:dev",
@@ -13,7 +13,7 @@
  "windows": [
  {
  "label": "main",
- "title": "加解密工具 v0.1.15",
+ "title": "加解密工具 v0.1.16",
  "width": 1400,
  "height": 900,
  "minWidth": 1000,

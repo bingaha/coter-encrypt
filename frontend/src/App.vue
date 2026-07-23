@@ -4,14 +4,12 @@ import {
  NConfigProvider,
  NMessageProvider,
  NDialogProvider,
- NNotificationProvider,
  zhCN,
  dateZhCN,
  darkTheme
 } from 'naive-ui'
 import MysqlDatasourceModal from '@/components/MysqlDatasourceModal.vue'
 import HttpProxyModal from '@/components/HttpProxyModal.vue'
-import SystemNotifyBridge from '@/components/SystemNotifyBridge.vue'
 
 // 主题状态管理，从 localStorage 读取初始值
 const isDarkMode = ref(localStorage.getItem('theme') === 'dark')
@@ -34,7 +32,6 @@ provide('toggleTheme', toggleTheme)
  <n-config-provider :theme="theme" :locale="zhCN" :date-locale="dateZhCN">
  <n-message-provider>
  <n-dialog-provider>
- <n-notification-provider>
  <div class="app-container">
  <router-view v-slot="{ Component }">
  <keep-alive>
@@ -43,9 +40,7 @@ provide('toggleTheme', toggleTheme)
  </router-view>
  <mysql-datasource-modal />
  <http-proxy-modal />
- <system-notify-bridge />
  </div>
- </n-notification-provider>
  </n-dialog-provider>
  </n-message-provider>
  </n-config-provider>

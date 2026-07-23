@@ -1,27 +1,17 @@
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_notification::NotificationExt;
 
-const SYSTEM_NOTIFY_EVENT: &str = "system-notify";
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SystemNotifyPayload {
-    title: String,
-    body: String,
-    ok: bool,
-}
-
-/// 系统级消息提示（无按钮、不阻塞）。
+/// 系统级消息提示：桌面横幅 + 原生弹窗（仅「我知道了」）。
 ///
-/// Linux 使用 `notify-send`（与本机已验证可见的通路一致，且不绑定易被挡住的应用槽位）；
-/// 其它平台走 tauri-plugin-notification。
-/// 无论桌面通知是否成功，都会再发 `system-notify` 事件，供应用内提示。
-/// 失败返回 Err，由调用方写业务日志；不回退 MessageDialog。
+/// Linux 桌面通知使用 `notify-send`；其它平台走 tauri-plugin-notification。
+/// 同时弹出 MessageDialog，按钮仅为「我知道了」，无业务操作。
+/// 返回值仅反映桌面通知结果，供调用方写业务日志；弹窗异步展示，不阻塞。
 pub fn show_system_notification(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
-    // 多行正文在部分桌面环境下展示异常，统一压成单行。
-    let body = body
+    let dialog_body = body.to_string();
+    // 多行正文在部分桌面环境下展示异常，桌面通知统一压成单行。
+    let banner_body = body
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -31,8 +21,7 @@ pub fn show_system_notification(app: &AppHandle, title: &str, body: &str) -> Res
     let result = {
         #[cfg(target_os = "linux")]
         {
-            let _ = app;
-            show_linux_notification(title, &body)
+            show_linux_notification(title, &banner_body)
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -40,20 +29,18 @@ pub fn show_system_notification(app: &AppHandle, title: &str, body: &str) -> Res
             app.notification()
                 .builder()
                 .title(title)
-                .body(&body)
+                .body(&banner_body)
                 .show()
                 .map_err(|err| format!("{err}"))
         }
     };
 
-    let _ = app.emit(
-        SYSTEM_NOTIFY_EVENT,
-        SystemNotifyPayload {
-            title: title.to_string(),
-            body: body.clone(),
-            ok: result.is_ok(),
-        },
-    );
+    app.dialog()
+        .message(dialog_body)
+        .title(title.to_string())
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCustom("我知道了".into()))
+        .show(|_| {});
 
     result
 }

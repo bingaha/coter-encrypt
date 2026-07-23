@@ -1,6 +1,6 @@
 [package]
 name = "coter-encrypt-desktop"
-version = "0.1.15"
+version = "0.1.16"
 description = "Coter Encrypt desktop application"
 authors = ["Coter Encrypt"]
 edition = "2021"
