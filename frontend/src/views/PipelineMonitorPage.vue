@@ -74,7 +74,9 @@ const snapshot = ref({
   singlePipelineId: '',
   autoMode: false,
   pendingCount: 0,
+  todoCount: 0,
   currentPending: null,
+  todos: [],
   pipelines: [],
   logs: []
 })
@@ -97,6 +99,7 @@ let pollTimer = null
 const running = computed(() => !!snapshot.value.running)
 const monitorMode = computed(() => snapshot.value.mode || (running.value ? 'loop' : 'idle'))
 const currentPending = computed(() => snapshot.value.currentPending)
+const todos = computed(() => snapshot.value.todos || [])
 const logs = computed(() => [...(snapshot.value.logs || [])].reverse())
 const stopButtonLabel = computed(() => {
   if (monitorMode.value === 'single') return '停止单次监控'
@@ -342,6 +345,18 @@ const handleOpenRun = async (pipelineId, runId = '') => {
   if (!pipelineId) return
   try {
     await openPipelineRunPage(pipelineId, runId || '')
+  } catch (error) {
+    message.error(error?.message || '打开页面失败')
+  }
+}
+
+const handleOpenTodo = async (todo) => {
+  if (!todo?.pipelineId) {
+    message.warning('流水线 ID 为空')
+    return
+  }
+  try {
+    await openPipelineRunPage(todo.pipelineId, todo.runId || '')
   } catch (error) {
     message.error(error?.message || '打开页面失败')
   }
@@ -671,7 +686,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="panel pending-panel">
+      <section v-if="!form.autoMode" class="panel pending-panel">
         <div class="panel-title">
           <strong>当前待办</strong>
           <n-tag v-if="snapshot.pendingCount" type="warning" size="small">
@@ -679,10 +694,7 @@ onBeforeUnmount(() => {
           </n-tag>
         </div>
 
-        <div v-if="form.autoMode" class="empty">
-          <n-text depth="3">自动模式已开启：审批与「人工卡点」分支将自动处理，仅记录日志。</n-text>
-        </div>
-        <div v-else-if="!currentPending" class="empty">
+        <div v-if="!currentPending" class="empty">
           <n-text depth="3">暂无待办。发现卡点后会在此显示（全局一次只处理一条）。</n-text>
         </div>
         <div v-else class="pending-card">
@@ -738,6 +750,47 @@ onBeforeUnmount(() => {
               稍后
             </n-button>
           </div>
+        </div>
+      </section>
+
+      <section class="panel todo-panel">
+        <div class="panel-title">
+          <div class="panel-title-copy">
+            <strong>待办列表</strong>
+            <n-text depth="3" class="panel-hint">
+              无审批权限等需手动处理的卡点；打开不会移除
+            </n-text>
+          </div>
+          <n-tag v-if="snapshot.todoCount" type="warning" size="small">
+            {{ snapshot.todoCount }}
+          </n-tag>
+        </div>
+
+        <div v-if="!todos.length" class="empty">
+          <n-text depth="3">暂无待办</n-text>
+        </div>
+        <div v-else class="todo-list">
+          <article v-for="todo in todos" :key="todo.id" class="todo-card">
+            <div class="todo-meta">
+              <div class="card-heading">
+                <h3>需手动审批</h3>
+                <n-tag v-if="todo.reason === 'no_permission'" type="warning" size="small">
+                  无审批权限
+                </n-tag>
+              </div>
+              <n-text depth="3">
+                {{ todo.pipelineName }}#{{ todo.pipelineId }}
+                · 运行 #{{ todo.runId }}
+                · {{ todo.stageName || '-' }}
+              </n-text>
+            </div>
+            <n-button size="small" type="primary" secondary @click="handleOpenTodo(todo)">
+              <template #icon>
+                <n-icon><OpenOutline /></n-icon>
+              </template>
+              打开
+            </n-button>
+          </article>
         </div>
       </section>
 
@@ -1092,6 +1145,49 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.panel-title-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.panel-hint {
+  font-size: 12px;
+}
+
+.todo-list {
+  display: grid;
+  gap: 10px;
+}
+
+.todo-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(240, 160, 32, 0.35);
+  background: rgba(240, 160, 32, 0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.todo-meta {
+  min-width: 0;
+}
+
+.todo-card .card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.todo-card h3 {
+  margin: 0;
+  font-size: 15px;
 }
 
 .log-list {

@@ -136,6 +136,9 @@ const pipelineStatusLabel = computed(() => {
   return '可用'
 })
 
+const pipelineBadgeCount = (pendingCount, todoCount) =>
+  (Number(pendingCount) || 0) + (Number(todoCount) || 0)
+
 const mergeStatusLabel = computed(() => {
   if (mergeMonitorRunning.value) return '监控中'
   if (mergeTodoCount.value > 0) return `待办 ${mergeTodoCount.value}`
@@ -145,7 +148,7 @@ const mergeStatusLabel = computed(() => {
 const refreshPipelineBadge = async () => {
   try {
     const { data } = await getPipelineMonitorSnapshot()
-    pipelinePendingCount.value = data?.pendingCount || 0
+    pipelinePendingCount.value = pipelineBadgeCount(data?.pendingCount, data?.todoCount)
     pipelineMonitorMode.value = data?.mode || (data?.running ? 'loop' : 'idle')
   } catch {
     // ignore
@@ -187,7 +190,10 @@ onMounted(async () => {
  await Promise.all([refreshPipelineBadge(), refreshMergeBadge()])
  try {
  unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
- pipelinePendingCount.value = event.payload?.pendingCount || 0
+ pipelinePendingCount.value = pipelineBadgeCount(
+   event.payload?.pendingCount,
+   event.payload?.todoCount
+ )
  pipelineMonitorMode.value =
    event.payload?.mode || (event.payload?.running ? 'loop' : 'idle')
  })

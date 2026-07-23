@@ -99,6 +99,20 @@ pub struct CurrentPending {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PipelineTodo {
+    pub id: String,
+    pub pipeline_id: String,
+    pub pipeline_name: String,
+    pub run_id: String,
+    pub stage_name: String,
+    pub job_id: String,
+    pub job_name: String,
+    /// e.g. no_permission
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PipelineStatusView {
     pub pipeline_id: String,
     pub pipeline_name: String,
@@ -128,7 +142,9 @@ pub struct MonitorSnapshot {
     pub single_pipeline_id: String,
     pub auto_mode: bool,
     pub pending_count: u32,
+    pub todo_count: usize,
     pub current_pending: Option<CurrentPending>,
+    pub todos: Vec<PipelineTodo>,
     pub pipelines: Vec<PipelineStatusView>,
     pub logs: Vec<LogEntry>,
 }
@@ -208,6 +224,7 @@ struct MonitorRuntime {
     single_pipeline_id: String,
     pipeline_states: HashMap<String, PipelineRuntimeState>,
     current_pending: Option<CurrentPending>,
+    todos: Vec<PipelineTodo>,
     logs: VecDeque<LogEntry>,
     last_notified_pending_id: String,
 }
@@ -422,6 +439,7 @@ fn reset_monitor_runtime(runtime: &mut MonitorRuntime) {
     runtime.single_pipeline_id.clear();
     runtime.current_pending = None;
     runtime.last_notified_pending_id.clear();
+    // Keep process-local todos so restarting does not re-notify the same checkpoint.
     for state_item in runtime.pipeline_states.values_mut() {
         state_item.current_run_id.clear();
         state_item.current_run_status.clear();
@@ -430,6 +448,123 @@ fn reset_monitor_runtime(runtime: &mut MonitorRuntime) {
         state_item.checkpoint_ack.clear();
         state_item.next_latest_query_time = 0;
     }
+}
+
+fn validate_todo_id(pipeline_id: &str, run_id: &str, job_id: &str) -> String {
+    format!("validate:{pipeline_id}:{run_id}:{job_id}")
+}
+
+fn remove_todos_for_pipeline_run(
+    runtime: &mut MonitorRuntime,
+    pipeline_id: &str,
+    run_id: &str,
+) {
+    runtime
+        .todos
+        .retain(|t| !(t.pipeline_id == pipeline_id && t.run_id == run_id));
+}
+
+fn collect_active_validate_todo_ids(response_data: &Value, pipeline_id: &str, run_id: &str) -> HashSet<String> {
+    let mut active = HashSet::new();
+    for (_stage_info, job) in extract_stage_rows(response_data) {
+        let job_name = value_as_str(job.get("name").unwrap_or(&Value::Null));
+        if job_name != "人工卡点" {
+            continue;
+        }
+        let job_id = {
+            let s = value_as_str(job.get("id").unwrap_or(&Value::Null));
+            if s.is_empty() {
+                continue;
+            }
+            s
+        };
+        let job_status = {
+            let s = value_as_str(job.get("status").unwrap_or(&Value::Null));
+            if s.is_empty() {
+                "UNKNOWN".to_string()
+            } else {
+                s
+            }
+        };
+        let has_validate_action = resolve_validate_action(&job);
+        let manual_job_live = job_status == "WAITING" || job_status == "SWITCH_MANUAL";
+        if has_validate_action
+            && (job_status == "WAITING" || job_status == "SWITCH_MANUAL" || manual_job_live)
+        {
+            active.insert(validate_todo_id(pipeline_id, run_id, &job_id));
+        }
+    }
+    active
+}
+
+fn cleanup_stale_pipeline_todos(
+    runtime: &mut MonitorRuntime,
+    pipeline_id: &str,
+    run_id: &str,
+    response_data: &Value,
+    prefix: &str,
+) -> bool {
+    let active_ids = collect_active_validate_todo_ids(response_data, pipeline_id, run_id);
+    let before = runtime.todos.len();
+    runtime.todos.retain(|t| {
+        if t.pipeline_id != pipeline_id {
+            return true;
+        }
+        if t.run_id != run_id {
+            return false;
+        }
+        active_ids.contains(&t.id)
+    });
+    let removed = before.saturating_sub(runtime.todos.len());
+    if removed > 0 {
+        append_log(
+            runtime,
+            "info",
+            format!("{prefix} 已清除 {removed} 条失效待办（卡点已处理或节点已推进）"),
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn push_no_permission_todo(
+    app: &AppHandle,
+    runtime: &mut MonitorRuntime,
+    pipeline_id: &str,
+    pipeline_name: &str,
+    run_id: &str,
+    stage_name: &str,
+    job_id: &str,
+    job_name: &str,
+    prefix: &str,
+) {
+    let id = validate_todo_id(pipeline_id, run_id, job_id);
+    if runtime.todos.iter().any(|t| t.id == id) {
+        return;
+    }
+    runtime.todos.push(PipelineTodo {
+        id,
+        pipeline_id: pipeline_id.to_string(),
+        pipeline_name: pipeline_name.to_string(),
+        run_id: run_id.to_string(),
+        stage_name: stage_name.to_string(),
+        job_id: job_id.to_string(),
+        job_name: job_name.to_string(),
+        reason: "no_permission".to_string(),
+    });
+    let title = "流水线监控 · 需手动审批";
+    let result = crate::system_notify::show_system_notification(
+        app,
+        title,
+        &format!("{prefix} · 阶段「{stage_name}」· 运行 #{run_id} · 当前账号无审批权限"),
+    );
+    log_system_notify_result(runtime, title, result);
+    append_log(
+        runtime,
+        "info",
+        format!("{prefix} 已记录待办（无审批权限）阶段「{stage_name}」 jobId={job_id}"),
+    );
 }
 
 fn finish_single_monitor(runtime: &mut MonitorRuntime) {
@@ -1085,7 +1220,9 @@ fn build_snapshot(runtime: &MonitorRuntime) -> MonitorSnapshot {
         single_pipeline_id: runtime.single_pipeline_id.clone(),
         auto_mode: runtime.config.auto_mode,
         pending_count,
+        todo_count: runtime.todos.len(),
         current_pending: runtime.current_pending.clone(),
+        todos: runtime.todos.clone(),
         pipelines,
         logs: runtime.logs.iter().cloned().collect(),
     }
@@ -1543,6 +1680,7 @@ async fn inspect_pipeline_run(
         {
             runtime.current_pending = None;
         }
+        remove_todos_for_pipeline_run(runtime, pipeline_id, &current_run_id);
         return cycle;
     }
 
@@ -1602,6 +1740,7 @@ async fn inspect_pipeline_run(
         {
             runtime.current_pending = None;
         }
+        remove_todos_for_pipeline_run(runtime, pipeline_id, &current_run_id);
         if single_mode {
             show_single_run_ended_alert(
                 app,
@@ -1627,6 +1766,15 @@ async fn inspect_pipeline_run(
 
     // 外部已处理或节点已推进时，清除失效待办，避免一直挂着
     if clear_resolved_pending(
+        runtime,
+        pipeline_id,
+        &current_run_id,
+        &response_data,
+        &prefix,
+    ) {
+        cycle.refresh = true;
+    }
+    if cleanup_stale_pipeline_todos(
         runtime,
         pipeline_id,
         &current_run_id,
@@ -1700,6 +1848,7 @@ async fn inspect_pipeline_run(
             {
                 runtime.current_pending = None;
             }
+            remove_todos_for_pipeline_run(runtime, pipeline_id, &current_run_id);
             return cycle;
         }
 
@@ -1838,21 +1987,17 @@ async fn inspect_pipeline_run(
                                     "{prefix} 人工卡点无审批权限 阶段「{stage_name}」 jobId={job_id}"
                                 ),
                             );
-                            if single_mode {
-                                if let Some(state) = runtime.pipeline_states.get_mut(pipeline_id) {
-                                    clear_current_run(
-                                        state,
-                                        now + config.idle_latest_query_interval_secs,
-                                    );
-                                }
-                                show_single_aborted_alert(
-                                    app,
-                                    runtime,
-                                    &format!("{prefix} 人工卡点无审批权限，阶段「{stage_name}」"),
-                                );
-                                finish_single_monitor(runtime);
-                                return cycle;
-                            }
+                            push_no_permission_todo(
+                                app,
+                                runtime,
+                                pipeline_id,
+                                &pipeline_name,
+                                &current_run_id,
+                                &stage_name,
+                                &job_id,
+                                &job_name,
+                                &prefix,
+                            );
                         }
                         cycle.refresh = true;
                     } else {
@@ -2144,6 +2289,7 @@ pub fn create_state() -> MonitorState {
             single_pipeline_id: String::new(),
             pipeline_states: HashMap::new(),
             current_pending: None,
+            todos: Vec::new(),
             logs: VecDeque::new(),
             last_notified_pending_id: String::new(),
         }),
@@ -2678,4 +2824,111 @@ pub fn open_pipeline_run_page(
     run_id: String,
 ) -> Result<(), String> {
     open_pipeline_page(&app, &pipeline_id, &run_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_todo(pipeline_id: &str, run_id: &str, job_id: &str) -> PipelineTodo {
+        PipelineTodo {
+            id: validate_todo_id(pipeline_id, run_id, job_id),
+            pipeline_id: pipeline_id.to_string(),
+            pipeline_name: "demo".to_string(),
+            run_id: run_id.to_string(),
+            stage_name: "发布Daily".to_string(),
+            job_id: job_id.to_string(),
+            job_name: "人工卡点".to_string(),
+            reason: "no_permission".to_string(),
+        }
+    }
+
+    fn waiting_validate_response(job_id: &str, status: &str) -> Value {
+        json!({
+            "stages": [{
+                "stageInfo": {
+                    "name": "发布Daily",
+                    "status": "WAITING",
+                    "jobs": [{
+                        "id": job_id,
+                        "name": "人工卡点",
+                        "status": status,
+                        "actions": [
+                            { "type": "PassPipelineValidate", "disable": true },
+                            { "type": "RefusePipelineValidate", "disable": true }
+                        ]
+                    }]
+                }
+            }]
+        })
+    }
+
+    fn empty_runtime_with_todos(todos: Vec<PipelineTodo>) -> MonitorRuntime {
+        MonitorRuntime {
+            config: PipelineMonitorConfig::default(),
+            running: true,
+            mode: MonitorMode::Single,
+            single_pipeline_id: "p1".to_string(),
+            pipeline_states: HashMap::new(),
+            current_pending: None,
+            todos,
+            logs: VecDeque::new(),
+            last_notified_pending_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn validate_todo_id_format() {
+        assert_eq!(
+            validate_todo_id("2280479", "100", "477072979"),
+            "validate:2280479:100:477072979"
+        );
+    }
+
+    #[test]
+    fn remove_todos_only_for_matching_pipeline_run() {
+        let mut runtime = empty_runtime_with_todos(vec![
+            sample_todo("p1", "r1", "j1"),
+            sample_todo("p1", "r2", "j2"),
+            sample_todo("p2", "r1", "j3"),
+        ]);
+        remove_todos_for_pipeline_run(&mut runtime, "p1", "r1");
+        assert_eq!(runtime.todos.len(), 2);
+        assert!(runtime.todos.iter().all(|t| t.id != "validate:p1:r1:j1"));
+    }
+
+    #[test]
+    fn cleanup_keeps_still_waiting_validate_todo() {
+        let mut runtime = empty_runtime_with_todos(vec![sample_todo("p1", "r1", "j1")]);
+        let response = waiting_validate_response("j1", "WAITING");
+        let changed = cleanup_stale_pipeline_todos(&mut runtime, "p1", "r1", &response, "p1#p1");
+        assert!(!changed);
+        assert_eq!(runtime.todos.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_removes_resolved_validate_todo() {
+        let mut runtime = empty_runtime_with_todos(vec![sample_todo("p1", "r1", "j1")]);
+        let response = waiting_validate_response("j1", "SUCCESS");
+        let changed = cleanup_stale_pipeline_todos(&mut runtime, "p1", "r1", &response, "p1#p1");
+        assert!(changed);
+        assert!(runtime.todos.is_empty());
+    }
+
+    #[test]
+    fn cleanup_removes_todo_for_stale_run_id() {
+        let mut runtime = empty_runtime_with_todos(vec![sample_todo("p1", "old", "j1")]);
+        let response = waiting_validate_response("j1", "WAITING");
+        let changed = cleanup_stale_pipeline_todos(&mut runtime, "p1", "new", &response, "p1#p1");
+        assert!(changed);
+        assert!(runtime.todos.is_empty());
+    }
+
+    #[test]
+    fn duplicate_todo_id_is_detectable_before_push() {
+        let runtime = empty_runtime_with_todos(vec![sample_todo("p1", "r1", "j1")]);
+        let id = validate_todo_id("p1", "r1", "j1");
+        assert!(runtime.todos.iter().any(|t| t.id == id));
+    }
 }
