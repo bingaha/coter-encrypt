@@ -78,3 +78,6 @@ Thumbs.db
 
 # Build outputs
 target/
+
+# Matt skills / local issue tracker — 默认不提交设计文档
+docs/

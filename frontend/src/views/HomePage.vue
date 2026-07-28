@@ -22,7 +22,8 @@ import {
  SwapHorizontalOutline,
  GitNetworkOutline,
  GitMergeOutline,
- GlobeOutline
+ GlobeOutline,
+ ListOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
@@ -31,6 +32,10 @@ import { useHttpProxyConfig } from '@/composables/useHttpProxyConfig'
 import { listen } from '@tauri-apps/api/event'
 import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
 import { getMergeMonitorSnapshot } from '@/api/mergeMonitor'
+import {
+ getHomePendingSummary,
+ maybeAutoRunOrderSubscribe
+} from '@/api/orderSubscribe'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -116,6 +121,15 @@ const toolEntries = [
  status: '可用',
  description: '监控云效合并请求 AI 评审完成，写入待办并系统通知。',
  capabilities: ['多仓库', '作者白名单', 'AI评审']
+ },
+ {
+ id: 'order-subscribe',
+ title: '后道订单订阅',
+ routeName: 'OrderSubscribeTool',
+ icon: ListOutline,
+ status: '可用',
+ description: '按机构与账期订阅后道订单待办，配置过滤条件并持久化。',
+ capabilities: ['多订阅', '地区机构搜索', '账期过滤']
  }
 ]
 
@@ -128,6 +142,12 @@ const mergeMonitorRunning = ref(false)
 const mergeTodoCount = ref(0)
 let unlistenMerge = null
 let mergePollTimer = null
+
+/** 首页顶栏待办总数（v1 = 后道订单；不把流水线/合并加总进来） */
+const homePendingTotal = ref(0)
+/** 后道订单工具卡角标 */
+const orderSubscribeTotal = ref(0)
+const orderSubscribeRunning = ref(false)
 
 const pipelineStatusLabel = computed(() => {
   if (pipelineMonitorMode.value === 'loop') return '循环监控'
@@ -144,6 +164,26 @@ const mergeStatusLabel = computed(() => {
   if (mergeTodoCount.value > 0) return `待办 ${mergeTodoCount.value}`
   return '可用'
 })
+
+const orderSubscribeStatusLabel = computed(() => {
+  if (orderSubscribeRunning.value) return '刷新中'
+  if (orderSubscribeTotal.value > 0) return `待办 ${orderSubscribeTotal.value}`
+  return '可用'
+})
+
+const applyPendingSummary = (summary) => {
+  const sources = Array.isArray(summary?.sources) ? summary.sources : []
+  const orderSource = sources.find((s) => s.id === 'order-subscribe')
+  orderSubscribeTotal.value = Number(orderSource?.count) || 0
+  // v1：顶栏只用摘要 total（仅后道订单），勿叠加 pipeline/merge
+  homePendingTotal.value = Number(summary?.total) || 0
+}
+
+const applyOrderSubscribeSnapshot = (snapshot) => {
+  const total = Number(snapshot?.total) || 0
+  orderSubscribeTotal.value = total
+  homePendingTotal.value = total
+}
 
 const refreshPipelineBadge = async () => {
   try {
@@ -162,6 +202,29 @@ const refreshMergeBadge = async () => {
     mergeTodoCount.value = data?.todoCount || 0
   } catch {
     // ignore
+  }
+}
+
+/** 立即展示上次快照总数（不触发网络） */
+const refreshOrderSubscribeBadge = async () => {
+  try {
+    const { data } = await getHomePendingSummary()
+    applyPendingSummary(data)
+  } catch {
+    // ignore
+  }
+}
+
+/** 按本地自然日门控：必要时自动执行一轮并覆盖角标/顶栏 */
+const runOrderSubscribeHomeBootstrap = async () => {
+  orderSubscribeRunning.value = true
+  try {
+    const { data } = await maybeAutoRunOrderSubscribe()
+    applyOrderSubscribeSnapshot(data?.snapshot)
+  } catch {
+    // 自动跑失败时保留已展示的快照总数
+  } finally {
+    orderSubscribeRunning.value = false
   }
 }
 
@@ -187,7 +250,13 @@ onMounted(async () => {
  checkConnection()
  }
  await loadProxyConfig()
- await Promise.all([refreshPipelineBadge(), refreshMergeBadge()])
+ // 先展示上次后道订单快照，再按日门控自动执行（无后台业务轮询）
+ await refreshOrderSubscribeBadge()
+ await Promise.all([
+  refreshPipelineBadge(),
+  refreshMergeBadge(),
+  runOrderSubscribeHomeBootstrap()
+ ])
  try {
  unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
  pipelinePendingCount.value = pipelineBadgeCount(
@@ -234,6 +303,20 @@ onBeforeUnmount(() => {
  </div>
 
  <div class="home-actions">
+ <n-tooltip trigger="hover">
+ <template #trigger>
+ <n-tag
+ class="home-pending-tag"
+ :type="homePendingTotal > 0 ? 'warning' : 'default'"
+ size="small"
+ :bordered="false"
+ >
+ 待办 {{ homePendingTotal }}
+ </n-tag>
+ </template>
+ 首页待办总数（当前为后道订单订阅；日后可汇总多业务）
+ </n-tooltip>
+
  <n-tooltip trigger="hover">
  <template #trigger>
  <n-button secondary size="small" :loading="testingDatasource" @click="openModal">
@@ -323,7 +406,12 @@ onBeforeUnmount(() => {
  'is-running':
  (tool.id === 'pipeline-monitor' &&
  (pipelineMonitorMode === 'loop' || pipelineMonitorMode === 'single')) ||
- (tool.id === 'merge-monitor' && mergeMonitorRunning)
+ (tool.id === 'merge-monitor' && mergeMonitorRunning) ||
+ (tool.id === 'order-subscribe' && orderSubscribeRunning),
+ 'is-pending':
+ tool.id === 'order-subscribe' &&
+ !orderSubscribeRunning &&
+ orderSubscribeTotal > 0
  }"
  >
  <template v-if="tool.id === 'pipeline-monitor'">
@@ -331,6 +419,9 @@ onBeforeUnmount(() => {
  </template>
  <template v-else-if="tool.id === 'merge-monitor'">
  {{ mergeStatusLabel }}
+ </template>
+ <template v-else-if="tool.id === 'order-subscribe'">
+ {{ orderSubscribeStatusLabel }}
  </template>
  <template v-else>
  {{ tool.status }}
@@ -421,6 +512,11 @@ onBeforeUnmount(() => {
  margin-left: 4px;
 }
 
+.home-pending-tag {
+ cursor: default;
+ font-variant-numeric: tabular-nums;
+}
+
 .home-content {
  width: min(1120px, calc(100vw - 48px));
  margin: 0 auto;
@@ -501,6 +597,11 @@ onBeforeUnmount(() => {
 .tool-status.is-running {
  color: #d03050;
  background-color: rgba(208, 48, 80, 0.12);
+}
+
+.tool-status.is-pending {
+ color: #f0a020;
+ background-color: rgba(240, 160, 32, 0.14);
 }
 
 .tool-card-main {

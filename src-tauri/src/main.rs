@@ -7,10 +7,12 @@ mod executor;
 mod har;
 mod http_client;
 mod merge_monitor;
+mod order_subscribe;
 mod oss_transfer;
 mod pipeline_monitor;
 mod project_store;
 mod system_notify;
+mod yunsheng_auth;
 
 use std::time::Duration;
 
@@ -356,6 +358,63 @@ async fn list_merge_monitor_repositories(
     merge_monitor::list_merge_monitor_repositories(state, request).await
 }
 
+#[tauri::command]
+fn load_yunsheng_auth_token() -> Result<yunsheng_auth::YunshengAuthConfig, String> {
+    yunsheng_auth::load_yunsheng_auth_config()
+}
+
+#[tauri::command]
+fn save_yunsheng_auth_token(
+    config: yunsheng_auth::YunshengAuthConfig,
+) -> Result<yunsheng_auth::YunshengAuthConfig, String> {
+    yunsheng_auth::save_yunsheng_auth_config(config)
+}
+
+#[tauri::command]
+fn load_order_subscribe_config() -> Result<order_subscribe::OrderSubscribeConfig, String> {
+    order_subscribe::load_order_subscribe_config()
+}
+
+#[tauri::command]
+fn save_order_subscribe_config(
+    config: order_subscribe::OrderSubscribeConfig,
+) -> Result<order_subscribe::OrderSubscribeConfig, String> {
+    order_subscribe::save_order_subscribe_config(config)
+}
+
+#[tauri::command]
+async fn list_order_subscribe_areas() -> Result<Vec<order_subscribe::AreaOption>, String> {
+    order_subscribe::list_order_subscribe_areas().await
+}
+
+#[tauri::command]
+async fn search_order_subscribe_orgs(
+    request: order_subscribe::SearchOrgAccountsRequest,
+) -> Result<Vec<order_subscribe::OrgAccountHit>, String> {
+    order_subscribe::search_order_subscribe_orgs(request).await
+}
+
+#[tauri::command]
+fn load_order_subscribe_result() -> Result<order_subscribe::ExecutionSnapshot, String> {
+    order_subscribe::load_order_subscribe_result()
+}
+
+#[tauri::command]
+async fn run_order_subscribe_now() -> Result<order_subscribe::ExecutionSnapshot, String> {
+    order_subscribe::run_order_subscribe_now().await
+}
+
+#[tauri::command]
+async fn maybe_auto_run_order_subscribe(
+) -> Result<order_subscribe::MaybeAutoRunOutcome, String> {
+    order_subscribe::maybe_auto_run_order_subscribe().await
+}
+
+#[tauri::command]
+fn get_home_pending_summary() -> Result<order_subscribe::HomePendingSummary, String> {
+    order_subscribe::get_home_pending_summary()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -424,7 +483,17 @@ fn main() {
             get_merge_monitor_snapshot,
             clear_merge_monitor_logs,
             open_merge_request_page,
-            list_merge_monitor_repositories
+            list_merge_monitor_repositories,
+            load_yunsheng_auth_token,
+            save_yunsheng_auth_token,
+            load_order_subscribe_config,
+            save_order_subscribe_config,
+            list_order_subscribe_areas,
+            search_order_subscribe_orgs,
+            load_order_subscribe_result,
+            run_order_subscribe_now,
+            maybe_auto_run_order_subscribe,
+            get_home_pending_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoterEncrypt");

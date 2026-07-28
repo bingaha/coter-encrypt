@@ -7,6 +7,7 @@ import RobotFeedbackPage from '../views/RobotFeedbackPage.vue'
 import OssTransferPage from '../views/OssTransferPage.vue'
 import PipelineMonitorPage from '../views/PipelineMonitorPage.vue'
 import MergeMonitorPage from '../views/MergeMonitorPage.vue'
+import OrderSubscribePage from '../views/OrderSubscribePage.vue'
 
 const routes = [
   {
@@ -48,6 +49,11 @@ const routes = [
     path: '/merge-monitor',
     name: 'MergeMonitorTool',
     component: MergeMonitorPage
+  },
+  {
+    path: '/order-subscribe',
+    name: 'OrderSubscribeTool',
+    component: OrderSubscribePage
   }
 ]
 
