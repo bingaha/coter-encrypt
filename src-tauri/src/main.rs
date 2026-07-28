@@ -442,10 +442,7 @@ fn main() {
         .manage(pipeline_monitor::create_state())
         .manage(merge_monitor::create_state())
         .setup(|app| {
-            let version = env!("CARGO_PKG_VERSION");
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&format!("加解密工具 v{version}"));
-            }
+            apply_window_title_with_version(app.handle());
             pipeline_monitor::spawn_background(app.handle().clone());
             merge_monitor::spawn_background(app.handle().clone());
             Ok(())
@@ -510,6 +507,19 @@ fn main() {
             maybe_auto_run_order_subscribe,
             get_home_pending_summary
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running CoterEncrypt");
+        .build(tauri::generate_context!())
+        .expect("error while building CoterEncrypt")
+        .run(|app_handle, event| {
+            // setup 时窗口偶发尚未就绪；Ready 再设一次，避免一直落在 tauri.conf 里的旧标题
+            if let tauri::RunEvent::Ready = event {
+                apply_window_title_with_version(app_handle);
+            }
+        });
+}
+
+fn apply_window_title_with_version(app: &tauri::AppHandle) {
+    let version = app.package_info().version.to_string();
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_title(&format!("加解密工具 v{version}"));
+    }
 }
