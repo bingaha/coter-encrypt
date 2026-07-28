@@ -98,7 +98,7 @@ npm run tauri:build
 
 ```text
 target/release/CoterEncrypt.exe
-target/release/bundle/nsis/CoterEncrypt_0.1.17_x64-setup.exe
+target/release/bundle/nsis/CoterEncrypt_0.1.18_x64-setup.exe
 ```
 
 - `CoterEncrypt.exe`：便携/内测运行

@@ -124,7 +124,12 @@ pub fn normalize_config(mut config: HttpProxyConfig) -> Result<HttpProxyConfig, 
 }
 
 pub fn build_http_client(timeout: Duration, config: &HttpProxyConfig) -> Result<Client, String> {
-    let mut builder = Client::builder().timeout(timeout);
+    // Disable idle connection reuse: a half-closed keep-alive socket can poison
+    // the long-lived Client used by merge/pipeline monitors and cause cascading
+    // "error sending request" failures until the process restarts.
+    let mut builder = Client::builder()
+        .timeout(timeout)
+        .pool_max_idle_per_host(0);
     match config.mode {
         HttpProxyMode::Direct => {
             builder = builder.no_proxy();
@@ -141,6 +146,15 @@ pub fn build_http_client(timeout: Duration, config: &HttpProxyConfig) -> Result<
     builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+}
+
+/// Fallback client when proxy-aware build fails; still disables idle pooling.
+pub fn build_fallback_http_client(timeout: Duration) -> Client {
+    Client::builder()
+        .timeout(timeout)
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap_or_else(|_| Client::new())
 }
 
 pub fn create_state() -> HttpProxyState {

@@ -2280,7 +2280,7 @@ pub fn create_state() -> MonitorState {
     let config = load_config_from_disk().unwrap_or_default();
     let proxy = crate::http_client::load_http_proxy_config().unwrap_or_default();
     let http = crate::http_client::build_http_client(Duration::from_secs(20), &proxy)
-        .unwrap_or_else(|_| Client::new());
+        .unwrap_or_else(|_| crate::http_client::build_fallback_http_client(Duration::from_secs(20)));
     MonitorState {
         inner: Mutex::new(MonitorRuntime {
             config,
