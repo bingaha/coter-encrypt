@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "coter-core"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "coter-encrypt-desktop"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "chrono",
  "coter-core",
@@ -2382,7 +2382,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
 dependencies = [
