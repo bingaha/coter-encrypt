@@ -75,7 +75,7 @@ pub struct MergeTodo {
     pub title: String,
     pub repo_name: String,
     pub detail_url: String,
-    /// `completed` | `skipped`
+    /// `completed` | `not_triggered`
     pub ai_review_status: String,
 }
 
@@ -83,7 +83,8 @@ pub struct MergeTodo {
 enum AiReviewOutcome {
     Pending,
     Completed,
-    Skipped,
+    /// 评论含「智能评审已跳过」（如改动行数超限）→ 终态「未触发审查」
+    NotTriggered,
 }
 
 impl AiReviewOutcome {
@@ -91,7 +92,7 @@ impl AiReviewOutcome {
         match self {
             Self::Pending => "pending",
             Self::Completed => "completed",
-            Self::Skipped => "skipped",
+            Self::NotTriggered => "not_triggered",
         }
     }
 
@@ -99,7 +100,7 @@ impl AiReviewOutcome {
         match self {
             Self::Pending => "进行中",
             Self::Completed => "已完成",
-            Self::Skipped => "已跳过",
+            Self::NotTriggered => "未触发审查",
         }
     }
 }
@@ -383,18 +384,20 @@ fn classify_ai_review(comments: &[Value]) -> AiReviewOutcome {
             continue;
         }
         let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        // 如 !144：### ⚠️ 智能评审已跳过（改动行数超限等）→ 未触发审查
         if content.contains("智能评审已跳过") {
-            return AiReviewOutcome::Skipped;
+            return AiReviewOutcome::NotTriggered;
         }
+        // 终态报告：🔎 代码评审报告（进行中标题用的是 🔍，勿混用）
         if content.contains("代码评审报告") || content.contains('🔎') {
             completed = true;
         }
     }
     if completed {
-        AiReviewOutcome::Completed
-    } else {
-        AiReviewOutcome::Pending
+        return AiReviewOutcome::Completed;
     }
+    // 仅有变更概述 /「代码审查进行中」/ 尚无 AI 评论 → 继续轮询
+    AiReviewOutcome::Pending
 }
 
 fn filter_whitelist_candidates(
@@ -857,7 +860,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         .unwrap_or(false)
                     {
                         let notify_title = match outcome {
-                            AiReviewOutcome::Skipped => "合并监控 · AI评审已跳过",
+                            AiReviewOutcome::NotTriggered => "合并监控 · 未触发审查",
                             _ => "合并监控 · AI评审完成",
                         };
                         match crate::system_notify::show_system_notification(
@@ -902,11 +905,25 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
 
                 let mut runtime = state.inner.lock().await;
                 if runtime.running {
+                    let pending_hint = if comments.iter().any(|c| {
+                        c.pointer("/author/name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            == "云效AI助手"
+                            && c.get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .contains("代码审查进行中")
+                    }) {
+                        "代码审查进行中"
+                    } else {
+                        "等待触发或出报告"
+                    };
                     append_log(
                         &mut runtime,
                         "info",
                         format!(
-                            "AI 评审未完成：!{} · 评论 {} 条，{} 秒后重试",
+                            "AI 评审未完成（{pending_hint}）：!{} · 评论 {} 条，{} 秒后重试",
                             tracked.local_id,
                             comments.len(),
                             ai_poll
@@ -1220,21 +1237,21 @@ mod tests {
     }
 
     #[test]
-    fn ai_skipped_when_assistant_says_skipped() {
+    fn ai_not_triggered_when_assistant_says_skipped() {
         let comments = vec![json!({
             "author": {"name": "云效AI助手"},
-            "content": "智能评审已跳过：本次变更无需评审"
+            "content": "### ⚠️ 智能评审已跳过\n\n跳过原因：改动行数超出限定"
         })];
-        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Skipped);
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::NotTriggered);
     }
 
     #[test]
-    fn ai_skipped_takes_priority_over_report_markers() {
+    fn ai_not_triggered_takes_priority_over_report_markers() {
         let comments = vec![json!({
             "author": {"name": "云效AI助手"},
             "content": "智能评审已跳过\n🔎 代码评审报告"
         })];
-        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Skipped);
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::NotTriggered);
     }
 
     #[test]
@@ -1244,6 +1261,55 @@ mod tests {
             "content": "正在评审中"
         })];
         assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Pending);
+    }
+
+    #[test]
+    fn ai_pending_when_review_in_progress() {
+        let comments = vec![
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "### title\n<details open>\n<summary> 变更概述 </summary>\n..."
+            }),
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "🔍 <strong>代码审查进行中</strong>\n> ⏳ 正在审查"
+            }),
+        ];
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Pending);
+    }
+
+    #[test]
+    fn ai_pending_when_only_change_summary() {
+        let comments = vec![
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "### title\n<details open>\n<summary> 变更概述 </summary>\n* 改动"
+            }),
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "<!-- ai-review-billing-notice-v1 -->计费公告"
+            }),
+        ];
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Pending);
+    }
+
+    #[test]
+    fn ai_completed_report_beats_in_progress_and_summary() {
+        let comments = vec![
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "## 🔎 代码评审报告\n通过"
+            }),
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "🔍 <strong>代码审查进行中</strong>"
+            }),
+            json!({
+                "author": {"name": "云效AI助手"},
+                "content": "<summary> 变更概述 </summary>"
+            }),
+        ];
+        assert_eq!(classify_ai_review(&comments), AiReviewOutcome::Completed);
     }
 
     #[test]

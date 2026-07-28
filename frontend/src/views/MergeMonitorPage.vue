@@ -106,13 +106,13 @@ const levelLabel = (level) => {
 }
 
 const aiReviewStatusLabel = (status) => {
-  if (status === 'skipped') return '已跳过'
+  if (status === 'not_triggered' || status === 'skipped') return '未触发审查'
   if (status === 'completed') return '已完成'
   return status || '已完成'
 }
 
 const aiReviewStatusTagType = (status) => {
-  if (status === 'skipped') return 'warning'
+  if (status === 'not_triggered' || status === 'skipped') return 'warning'
   return 'success'
 }
 
@@ -569,7 +569,9 @@ onBeforeUnmount(() => {
         <div class="panel-title">
           <div class="panel-title-copy">
             <strong>待办列表</strong>
-            <n-text depth="3" class="panel-hint">AI 已完成或已跳过，可打开查看；打开不会移除</n-text>
+            <n-text depth="3" class="panel-hint">
+              AI 已完成或未触发审查，可打开查看；打开不会移除
+            </n-text>
           </div>
           <n-tag v-if="snapshot.todoCount" type="warning" size="small">
             {{ snapshot.todoCount }}
@@ -577,7 +579,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="!todos.length" class="empty">
-          <n-text depth="3">暂无 AI 已完成或已跳过的待办</n-text>
+          <n-text depth="3">暂无 AI 已完成或未触发的待办</n-text>
         </div>
         <div v-else class="todo-list">
           <article
