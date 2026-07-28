@@ -1,6 +1,6 @@
-//! 共享云盛管理端鉴权（token_inner）。
+//! 共享云生管理端鉴权：用户粘贴完整 Cookie（须含 token_inner=...）。
 //!
-//! v1：手动粘贴 Token；预留 AutoLogin 扩展点，调用方只依赖 get_token / 请求头辅助。
+//! 手动粘贴 Cookie；预留 AutoLogin 扩展点，调用方只依赖 get_cookies / 请求头辅助。
 
 use std::{fs, path::PathBuf, time::Duration};
 
@@ -14,52 +14,52 @@ use crate::http_client::{self, HttpProxyConfig};
 const CONFIG_FILE_NAME: &str = "yunsheng-auth.json";
 const WORK_ORIGIN: &str = "https://work.yunsheng.cn";
 
-pub const MISSING_TOKEN_ERROR: &str = "请先配置云盛 Token（token_inner）";
-pub const EXPIRED_TOKEN_ERROR: &str = "云盛登录已失效，请重新配置 Token（token_inner）";
+pub const MISSING_COOKIES_ERROR: &str = "请先配置云生 Cookie（须包含 token_inner=...）";
+pub const INVALID_COOKIES_ERROR: &str =
+    "云生 Cookie 格式无效，请粘贴完整内容，例如：token_inner=...";
+pub const EXPIRED_TOKEN_ERROR: &str = "云生登录已失效，请重新配置 Cookie";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct YunshengAuthConfig {
+    /// 完整 Cookie 请求头值，例如 `token_inner=eyJ...` 或 `a=1; token_inner=eyJ...`
     #[serde(default)]
-    pub token_inner: String,
+    pub cookies: String,
 }
 
-/// 鉴权提供方扩展点：v1 仅 ManualToken；AutoLogin 预留不实现。
+/// 鉴权提供方扩展点：当前仅 ManualCookies；AutoLogin 预留不实现。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AuthProviderKind {
     #[default]
-    ManualToken,
-    /// 预留：自动登录（v1 不实现）
+    ManualCookies,
     AutoLogin,
 }
 
 pub trait AuthProvider: Send + Sync {
-    fn get_token(&self) -> Result<String, String>;
+    fn get_cookies(&self) -> Result<String, String>;
 }
 
-/// v1：从独立配置文件读取手动粘贴的 token_inner。
-#[allow(dead_code)] // 供后续 manage-api 模块经 get_token / AuthProvider 复用
-pub struct ManualTokenProvider;
+#[allow(dead_code)]
+pub struct ManualCookiesProvider;
 
-impl AuthProvider for ManualTokenProvider {
-    fn get_token(&self) -> Result<String, String> {
+impl AuthProvider for ManualCookiesProvider {
+    fn get_cookies(&self) -> Result<String, String> {
         let config = load_yunsheng_auth_config()?;
-        require_token(&config.token_inner)
+        require_cookies(&config.cookies)
     }
 }
 
-/// 预留自动登录提供方；调用即明确报错，避免误用。
 pub struct AutoLoginProvider;
 
 impl AuthProvider for AutoLoginProvider {
-    fn get_token(&self) -> Result<String, String> {
-        Err("自动登录尚未实现，请使用手动 Token".to_string())
+    fn get_cookies(&self) -> Result<String, String> {
+        Err(MISSING_COOKIES_ERROR.to_string())
     }
 }
 
 pub fn active_provider() -> AuthProviderKind {
-    AuthProviderKind::ManualToken
+    AuthProviderKind::ManualCookies
 }
 
 fn config_path() -> Result<PathBuf, String> {
@@ -82,9 +82,9 @@ pub fn load_yunsheng_auth_config() -> Result<YunshengAuthConfig, String> {
         save_yunsheng_auth_config_to_disk(&config)?;
         return Ok(config);
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("读取云盛鉴权配置失败: {e}"))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取云生鉴权配置失败: {e}"))?;
     let config: YunshengAuthConfig =
-        serde_json::from_str(&content).map_err(|e| format!("解析云盛鉴权配置失败: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("解析云生鉴权配置失败: {e}"))?;
     Ok(config)
 }
 
@@ -92,39 +92,52 @@ pub fn save_yunsheng_auth_config_to_disk(config: &YunshengAuthConfig) -> Result<
     let path = config_path()?;
     ensure_config_dir(&path)?;
     let content = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("序列化云盛鉴权配置失败: {e}"))?;
-    fs::write(&path, content).map_err(|e| format!("写入云盛鉴权配置失败: {e}"))?;
+        .map_err(|e| format!("序列化云生鉴权配置失败: {e}"))?;
+    fs::write(&path, content).map_err(|e| format!("写入云生鉴权配置失败: {e}"))?;
     Ok(())
 }
 
 pub fn save_yunsheng_auth_config(config: YunshengAuthConfig) -> Result<YunshengAuthConfig, String> {
     let mut config = config;
-    config.token_inner = config.token_inner.trim().to_string();
+    config.cookies = normalize_cookies_input(&config.cookies)?;
     save_yunsheng_auth_config_to_disk(&config)?;
     Ok(config)
 }
 
-/// 纯逻辑：校验 token 非空；供测试与 get_token 复用。
-pub fn require_token(token_inner: &str) -> Result<String, String> {
-    let token = token_inner.trim();
-    if token.is_empty() {
-        return Err(MISSING_TOKEN_ERROR.to_string());
-    }
-    Ok(token.to_string())
+/// 规范化并校验用户粘贴的 Cookie：非空，且包含 `token_inner=` 名值对。
+pub fn normalize_cookies_input(raw: &str) -> Result<String, String> {
+    let cookies = raw.trim().trim_end_matches(';').trim().to_string();
+    require_cookies(&cookies)
 }
 
-/// 统一取 token；缺 token 返回明确中文错误。
-#[allow(dead_code)] // 供后续 manage-api 模块复用
-pub fn get_token() -> Result<String, String> {
+/// 纯逻辑：Cookie 非空且含 token_inner=。
+pub fn require_cookies(cookies: &str) -> Result<String, String> {
+    let cookies = cookies.trim();
+    if cookies.is_empty() {
+        return Err(MISSING_COOKIES_ERROR.to_string());
+    }
+    if !cookie_header_has_token_inner(cookies) {
+        return Err(INVALID_COOKIES_ERROR.to_string());
+    }
+    Ok(cookies.to_string())
+}
+
+fn cookie_header_has_token_inner(cookies: &str) -> bool {
+    cookies.split(';').any(|part| {
+        let part = part.trim();
+        part.strip_prefix("token_inner=")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// 统一取 Cookie 头；缺失或格式无效返回明确中文错误。
+#[allow(dead_code)]
+pub fn get_cookies() -> Result<String, String> {
     match active_provider() {
-        AuthProviderKind::ManualToken => ManualTokenProvider.get_token(),
-        AuthProviderKind::AutoLogin => AutoLoginProvider.get_token(),
+        AuthProviderKind::ManualCookies => ManualCookiesProvider.get_cookies(),
+        AuthProviderKind::AutoLogin => AutoLoginProvider.get_cookies(),
     }
-}
-
-/// Cookie 值：`token_inner=...`
-pub fn build_auth_cookie(token: &str) -> String {
-    format!("token_inner={token}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,10 +149,10 @@ pub struct AuthRequestHeaders {
     pub referer: String,
 }
 
-/// 构造管理端通用请求头（Cookie + accept/content-type/origin/referer）。
-pub fn build_auth_request_headers(token: &str) -> AuthRequestHeaders {
+/// 构造管理端通用请求头（Cookie 原样放入 + accept/content-type/origin/referer）。
+pub fn build_auth_request_headers(cookies: &str) -> AuthRequestHeaders {
     AuthRequestHeaders {
-        cookie: build_auth_cookie(token),
+        cookie: cookies.trim().to_string(),
         accept: "application/json, text/plain, */*".to_string(),
         content_type: "application/json".to_string(),
         origin: WORK_ORIGIN.to_string(),
@@ -147,13 +160,12 @@ pub fn build_auth_request_headers(token: &str) -> AuthRequestHeaders {
     }
 }
 
-/// 将鉴权头附加到 reqwest RequestBuilder（供后续 manage-api 模块复用）。
 #[allow(dead_code)]
 pub fn apply_auth_headers(
     builder: reqwest::RequestBuilder,
-    token: &str,
+    cookies: &str,
 ) -> reqwest::RequestBuilder {
-    let headers = build_auth_request_headers(token);
+    let headers = build_auth_request_headers(cookies);
     builder
         .header(reqwest::header::COOKIE, headers.cookie)
         .header(reqwest::header::ACCEPT, headers.accept)
@@ -162,13 +174,10 @@ pub fn apply_auth_headers(
         .header(reqwest::header::REFERER, headers.referer)
 }
 
-/// 出站客户端：走全局代理配置。
 pub fn build_yunsheng_http_client(proxy: &HttpProxyConfig) -> Result<Client, String> {
     http_client::build_http_client(Duration::from_secs(30), proxy)
 }
 
-/// 将 HTTP 401 / 未授权或 API 表示登录失效映射为可展示的中文错误。
-/// 若非鉴权类错误则返回 None。
 pub fn map_auth_error(http_status: u16, body: Option<&Value>) -> Option<String> {
     if http_status == 401 {
         return Some(EXPIRED_TOKEN_ERROR.to_string());
@@ -243,17 +252,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn require_token_rejects_empty() {
-        let err = require_token("").expect_err("empty should fail");
-        assert_eq!(err, MISSING_TOKEN_ERROR);
+    fn require_cookies_rejects_empty() {
+        let err = require_cookies("").expect_err("empty should fail");
+        assert_eq!(err, MISSING_COOKIES_ERROR);
 
-        let err = require_token("   ").expect_err("whitespace should fail");
-        assert_eq!(err, MISSING_TOKEN_ERROR);
+        let err = require_cookies("   ").expect_err("whitespace should fail");
+        assert_eq!(err, MISSING_COOKIES_ERROR);
     }
 
     #[test]
-    fn require_token_accepts_non_empty() {
-        assert_eq!(require_token(" abc ").unwrap(), "abc");
+    fn require_cookies_rejects_bare_token_without_name() {
+        let err = require_cookies("eyJhbGciOiJSUzI1NiJ9.abc").expect_err("bare jwt");
+        assert_eq!(err, INVALID_COOKIES_ERROR);
+    }
+
+    #[test]
+    fn require_cookies_accepts_token_inner_pair() {
+        let cookies = require_cookies("token_inner=eyJhbGciOiJSUzI1NiJ9.abc").unwrap();
+        assert_eq!(cookies, "token_inner=eyJhbGciOiJSUzI1NiJ9.abc");
+    }
+
+    #[test]
+    fn require_cookies_accepts_multi_cookie_header() {
+        let cookies =
+            require_cookies("foo=1; token_inner=eyJhbGciOiJSUzI1NiJ9.abc; bar=2").unwrap();
+        assert!(cookies.contains("token_inner=eyJhbGciOiJSUzI1NiJ9.abc"));
+    }
+
+    #[test]
+    fn normalize_trims_and_strips_trailing_semicolon() {
+        let cookies = normalize_cookies_input("  token_inner=abc;  ").unwrap();
+        assert_eq!(cookies, "token_inner=abc");
     }
 
     #[test]
@@ -284,8 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn build_auth_request_headers_shape() {
-        let headers = build_auth_request_headers("tok-123");
+    fn build_auth_request_headers_uses_cookies_as_is() {
+        let headers = build_auth_request_headers("token_inner=tok-123");
         assert_eq!(headers.cookie, "token_inner=tok-123");
         assert_eq!(headers.origin, "https://work.yunsheng.cn");
         assert_eq!(headers.referer, "https://work.yunsheng.cn");
@@ -295,15 +324,15 @@ mod tests {
 
     #[test]
     fn manual_provider_is_default_active() {
-        assert_eq!(active_provider(), AuthProviderKind::ManualToken);
+        assert_eq!(active_provider(), AuthProviderKind::ManualCookies);
     }
 
     #[test]
-    fn auto_login_provider_is_not_implemented() {
+    fn auto_login_provider_asks_for_cookies() {
         let err = AutoLoginProvider
-            .get_token()
+            .get_cookies()
             .expect_err("auto login reserved");
-        assert!(err.contains("尚未实现"));
+        assert_eq!(err, MISSING_COOKIES_ERROR);
     }
 
     #[test]

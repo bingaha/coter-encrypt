@@ -400,14 +400,27 @@ fn load_order_subscribe_result() -> Result<order_subscribe::ExecutionSnapshot, S
 }
 
 #[tauri::command]
+fn clear_order_subscribe_result() -> Result<(), String> {
+    order_subscribe::clear_order_subscribe_result()
+}
+
+#[tauri::command]
+fn set_order_subscribe_auto_run(
+    enabled: bool,
+) -> Result<order_subscribe::OrderSubscribeConfig, String> {
+    order_subscribe::set_order_subscribe_auto_run(enabled)
+}
+
+#[tauri::command]
 async fn run_order_subscribe_now() -> Result<order_subscribe::ExecutionSnapshot, String> {
     order_subscribe::run_order_subscribe_now().await
 }
 
 #[tauri::command]
 async fn maybe_auto_run_order_subscribe(
+    app: tauri::AppHandle,
 ) -> Result<order_subscribe::MaybeAutoRunOutcome, String> {
-    order_subscribe::maybe_auto_run_order_subscribe().await
+    order_subscribe::maybe_auto_run_order_subscribe(&app).await
 }
 
 #[tauri::command]
@@ -491,6 +504,8 @@ fn main() {
             list_order_subscribe_areas,
             search_order_subscribe_orgs,
             load_order_subscribe_result,
+            clear_order_subscribe_result,
+            set_order_subscribe_auto_run,
             run_order_subscribe_now,
             maybe_auto_run_order_subscribe,
             get_home_pending_summary

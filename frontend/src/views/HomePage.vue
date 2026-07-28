@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, inject, onActivated, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
  NButton,
@@ -143,7 +143,6 @@ const mergeTodoCount = ref(0)
 let unlistenMerge = null
 let mergePollTimer = null
 
-/** 首页顶栏待办总数（v1 = 后道订单；不把流水线/合并加总进来） */
 const homePendingTotal = ref(0)
 /** 后道订单工具卡角标 */
 const orderSubscribeTotal = ref(0)
@@ -175,7 +174,6 @@ const applyPendingSummary = (summary) => {
   const sources = Array.isArray(summary?.sources) ? summary.sources : []
   const orderSource = sources.find((s) => s.id === 'order-subscribe')
   orderSubscribeTotal.value = Number(orderSource?.count) || 0
-  // v1：顶栏只用摘要 total（仅后道订单），勿叠加 pipeline/merge
   homePendingTotal.value = Number(summary?.total) || 0
 }
 
@@ -215,14 +213,14 @@ const refreshOrderSubscribeBadge = async () => {
   }
 }
 
-/** 按本地自然日门控：必要时自动执行一轮并覆盖角标/顶栏 */
+/** 按本地自然日门控：必要时自动执行一轮并覆盖角标/顶栏；系统通知由 Rust 侧发出 */
 const runOrderSubscribeHomeBootstrap = async () => {
   orderSubscribeRunning.value = true
   try {
     const { data } = await maybeAutoRunOrderSubscribe()
     applyOrderSubscribeSnapshot(data?.snapshot)
   } catch {
-    // 自动跑失败时保留已展示的快照总数
+    // 失败时保留已展示的快照总数；系统通知已在后端弹出
   } finally {
     orderSubscribeRunning.value = false
   }
@@ -244,19 +242,35 @@ const handleOpenConfigDir = async () => {
  }
 }
 
+let homeBootstrapped = false
+
+const refreshHomePendingFromSnapshot = async () => {
+  await refreshOrderSubscribeBadge()
+}
+
+/** 进程内只跑一次启动自动查询（同步占位，避免 onMounted/onActivated 竞态双跑） */
+const kickOffStartupAutoRunOnce = async () => {
+  if (homeBootstrapped) return
+  homeBootstrapped = true
+  await runOrderSubscribeHomeBootstrap()
+}
+
+onActivated(async () => {
+  // keep-alive：从工具页返回时必须重读快照，否则待办仍显示旧值
+  await refreshHomePendingFromSnapshot()
+  await kickOffStartupAutoRunOnce()
+})
+
 onMounted(async () => {
  const loaded = await loadConfig()
  if (loaded) {
  checkConnection()
  }
  await loadProxyConfig()
- // 先展示上次后道订单快照，再按日门控自动执行（无后台业务轮询）
- await refreshOrderSubscribeBadge()
- await Promise.all([
-  refreshPipelineBadge(),
-  refreshMergeBadge(),
-  runOrderSubscribeHomeBootstrap()
- ])
+ // 首次挂载先读快照；自动查询与 onActivated 共用一次性门控
+ await refreshHomePendingFromSnapshot()
+ await kickOffStartupAutoRunOnce()
+ await Promise.all([refreshPipelineBadge(), refreshMergeBadge()])
  try {
  unlistenPipeline = await listen('pipeline-monitor-state', (event) => {
  pipelinePendingCount.value = pipelineBadgeCount(
@@ -314,7 +328,7 @@ onBeforeUnmount(() => {
  待办 {{ homePendingTotal }}
  </n-tag>
  </template>
- 首页待办总数（当前为后道订单订阅；日后可汇总多业务）
+ 待办总数
  </n-tooltip>
 
  <n-tooltip trigger="hover">

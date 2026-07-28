@@ -12,12 +12,16 @@ export const searchOrderSubscribeOrgs = (request) =>
 
 export const loadOrderSubscribeResult = () => invokeApi('load_order_subscribe_result')
 
+export const clearOrderSubscribeResult = () => invokeApi('clear_order_subscribe_result')
+
+export const setOrderSubscribeAutoRun = (enabled) =>
+  invokeApi('set_order_subscribe_auto_run', { enabled })
+
 export const runOrderSubscribeNow = () => invokeApi('run_order_subscribe_now')
 
 /** 启动/进入首页：按本地自然日门控，必要时自动执行一轮并返回快照 */
 export const maybeAutoRunOrderSubscribe = () => invokeApi('maybe_auto_run_order_subscribe')
 
-/** 首页待办摘要（v1 仅后道订单；结构预留多业务） */
 export const getHomePendingSummary = () => invokeApi('get_home_pending_summary')
 
 export const ORDER_STATE_OPTIONS = [
@@ -75,7 +79,8 @@ export const createDefaultSubscription = () => ({
   areaName: '',
   billMonthMode: 'current',
   billMonth: '',
+  businessBillMonth: '',
   orderStates: [...DEFAULT_ORDER_STATES],
-  bizTypes: [],
+  bizTypes: BIZ_TYPE_OPTIONS.map((item) => item.value),
   insCodes: []
 })

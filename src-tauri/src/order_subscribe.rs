@@ -7,8 +7,10 @@ use directories::ProjectDirs;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 use crate::http_client;
+use crate::system_notify;
 use crate::yunsheng_auth;
 
 const CONFIG_FILE_NAME: &str = "order-subscribe.json";
@@ -46,6 +48,9 @@ pub struct Subscription {
     /// fixed 时必填，YYYYMM
     #[serde(default)]
     pub bill_month: String,
+    /// 机构侧业务月份提示（来自 orgAccount 的 orderMonthGjj / orderMonthSb）；仅展示，不影响 `current` 解析。
+    #[serde(default)]
+    pub business_bill_month: String,
     #[serde(default)]
     pub order_states: Vec<i32>,
     #[serde(default)]
@@ -75,8 +80,12 @@ impl Subscription {
             area_name: String::new(),
             bill_month_mode: default_bill_month_mode(),
             bill_month: String::new(),
+            business_bill_month: String::new(),
             order_states: default_order_states(),
-            biz_types: Vec::new(),
+            biz_types: DISPLAY_BIZ_TYPES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             ins_codes: Vec::new(),
         }
     }
@@ -85,6 +94,9 @@ impl Subscription {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderSubscribeConfig {
+    /// 启动/进入首页时是否按日自动查询；默认关闭。
+    #[serde(default)]
+    pub auto_run_on_startup: bool,
     #[serde(default)]
     pub subscriptions: Vec<Subscription>,
 }
@@ -103,6 +115,15 @@ pub struct AreaOption {
 pub struct OrgAccountHit {
     pub org_account_id: i64,
     pub account_name: String,
+    /// 机构公积金业务账期 YYYYMM 数值，如 202608；无则为 0。
+    #[serde(default)]
+    pub order_month_gjj: i64,
+    /// 机构社保业务账期 YYYYMM 数值；无则为 0。
+    #[serde(default)]
+    pub order_month_sb: i64,
+    /// 由社保/公积金业务月合成的 YYYYMM（仅展示用）。
+    #[serde(default)]
+    pub business_bill_month: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -265,6 +286,14 @@ pub fn save_order_subscribe_config(
     Ok(config)
 }
 
+/// 仅更新启动自动查询开关（不校验订阅完整性）。
+pub fn set_order_subscribe_auto_run(enabled: bool) -> Result<OrderSubscribeConfig, String> {
+    let mut config = load_order_subscribe_config()?;
+    config.auto_run_on_startup = enabled;
+    save_order_subscribe_config_to_disk(&config)?;
+    Ok(config)
+}
+
 /// 规范化订阅配置：账期模式、业务类型白名单、字段 trim。
 pub fn normalize_config(config: &mut OrderSubscribeConfig) {
     for sub in &mut config.subscriptions {
@@ -280,6 +309,7 @@ pub fn normalize_subscription(sub: &mut Subscription) {
     sub.account_name = sub.account_name.trim().to_string();
     sub.area_name = sub.area_name.trim().to_string();
     sub.bill_month = sub.bill_month.trim().to_string();
+    sub.business_bill_month = sub.business_bill_month.trim().to_string();
 
     let mode = sub.bill_month_mode.trim().to_ascii_lowercase();
     sub.bill_month_mode = if mode == "fixed" {
@@ -318,7 +348,7 @@ fn validate_config(config: &OrderSubscribeConfig) -> Result<(), String> {
         }
         if sub.bill_month_mode == "fixed" {
             if !is_valid_bill_month(&sub.bill_month) {
-                return Err(format!("{label}：固定账期须为 YYYYMM"));
+                return Err(format!("{label}：固定月份须为 YYYYMM"));
             }
         }
     }
@@ -333,7 +363,19 @@ pub fn is_valid_bill_month(value: &str) -> bool {
     (1..=12).contains(&month)
 }
 
-/// 账期解析：`current` 取注入的本地日期年月；`fixed` 用订阅上的 YYYYMM。
+/// 从机构业务账期字段合成 YYYYMM（取社保/公积金中较大的有效值）。
+pub fn business_bill_month_from_org_months(order_month_gjj: i64, order_month_sb: i64) -> String {
+    [order_month_gjj, order_month_sb]
+        .into_iter()
+        .map(|n| n.to_string())
+        .filter(|s| is_valid_bill_month(s))
+        .max()
+        .unwrap_or_default()
+}
+
+/// 月份解析：
+/// - `fixed`：用订阅上的 YYYYMM
+/// - `current`：本地系统当前自然月
 pub fn resolve_bill_month(sub: &Subscription, now: NaiveDate) -> String {
     if sub.bill_month_mode == "fixed" && is_valid_bill_month(&sub.bill_month) {
         return sub.bill_month.clone();
@@ -578,9 +620,22 @@ pub fn map_org_record(record: &Value) -> Option<OrgAccountHit> {
         .unwrap_or_default()
         .trim()
         .to_string();
+    let order_month_gjj = record
+        .get("orderMonthGjj")
+        .or_else(|| record.get("order_month_gjj"))
+        .and_then(value_to_i64)
+        .unwrap_or(0);
+    let order_month_sb = record
+        .get("orderMonthSb")
+        .or_else(|| record.get("order_month_sb"))
+        .and_then(value_to_i64)
+        .unwrap_or(0);
     Some(OrgAccountHit {
         org_account_id,
         account_name,
+        order_month_gjj,
+        order_month_sb,
+        business_bill_month: business_bill_month_from_org_months(order_month_gjj, order_month_sb),
     })
 }
 
@@ -682,23 +737,23 @@ fn walk_areas(node: &Value, province_hint: &str, out: &mut Vec<AreaOption>) {
 }
 
 async fn post_manage_api(path: &str, body: Value) -> Result<Value, String> {
-    let token = yunsheng_auth::get_token()?;
+    let cookies = yunsheng_auth::get_cookies()?;
     let proxy = http_client::load_http_proxy_config().unwrap_or_default();
     let client = yunsheng_auth::build_yunsheng_http_client(&proxy)?;
     let url = format!("{MANAGE_API_BASE}{path}");
 
     let builder = client.post(&url).json(&body);
-    let builder = yunsheng_auth::apply_auth_headers(builder, &token);
+    let builder = yunsheng_auth::apply_auth_headers(builder, &cookies);
 
     let response = builder
         .send()
         .await
-        .map_err(|e| format!("请求云盛接口失败: {e}"))?;
+        .map_err(|e| format!("请求云生接口失败: {e}"))?;
     let status = response.status().as_u16();
     let text = response
         .text()
         .await
-        .map_err(|e| format!("读取云盛接口响应失败: {e}"))?;
+        .map_err(|e| format!("读取云生接口响应失败: {e}"))?;
 
     let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
 
@@ -711,7 +766,7 @@ async fn post_manage_api(path: &str, body: Value) -> Result<Value, String> {
             .or_else(|| parsed.get("message"))
             .and_then(|v| v.as_str())
             .unwrap_or("请求失败");
-        return Err(format!("云盛接口错误 ({status}): {msg}"));
+        return Err(format!("云生接口错误 ({status}): {msg}"));
     }
 
     // 业务层鉴权失败（HTTP 200 但 payload 表示未登录）
@@ -767,6 +822,15 @@ pub fn load_order_subscribe_result() -> Result<ExecutionSnapshot, String> {
     serde_json::from_str(&content).map_err(|e| format!("解析后道订单执行结果失败: {e}"))
 }
 
+/// 删除落盘的执行结果快照（首页待办随之归零）。
+pub fn clear_order_subscribe_result() -> Result<(), String> {
+    let path = result_path()?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("删除后道订单执行结果失败: {e}"))?;
+    }
+    Ok(())
+}
+
 fn save_order_subscribe_result_to_disk(snapshot: &ExecutionSnapshot) -> Result<(), String> {
     let path = result_path()?;
     ensure_config_dir(&path)?;
@@ -783,29 +847,24 @@ pub async fn run_order_subscribe_now() -> Result<ExecutionSnapshot, String> {
     let today = now.date_naive();
     let executed_at = now.format("%Y-%m-%dT%H:%M:%S").to_string();
 
-    let mut results = Vec::new();
+    let mut responses: BTreeMap<String, Result<Value, String>> = BTreeMap::new();
     for sub in &config.subscriptions {
         if !sub.enabled {
             continue;
         }
         let bill_month = resolve_bill_month(sub, today);
         let body = build_operate_order_body(sub, &bill_month);
-        match post_manage_api("/operateOrder/pageList", body).await {
-            Ok(resp) => {
-                let records = extract_records(&resp);
-                results.push(aggregate_subscription_success(sub, &bill_month, &records));
-            }
-            Err(err) => {
-                results.push(aggregate_subscription_error(sub, &bill_month, err));
-            }
-        }
+        responses.insert(
+            sub.id.clone(),
+            post_manage_api("/operateOrder/pageList", body).await,
+        );
     }
 
-    let snapshot = build_execution_snapshot(
-        executed_at,
-        today.format("%Y-%m-%d").to_string(),
-        results,
-    );
+    let snapshot = execute_subscriptions_pure(&config, today, &executed_at, &|sub, _bill_month| {
+        responses.get(&sub.id).cloned().unwrap_or_else(|| {
+            Err("内部错误：缺少订阅查询结果".to_string())
+        })
+    });
     save_order_subscribe_result_to_disk(&snapshot)?;
     Ok(snapshot)
 }
@@ -829,10 +888,19 @@ pub fn get_home_pending_summary() -> Result<HomePendingSummary, String> {
     Ok(pending_summary_from_snapshot(&snapshot))
 }
 
-/// 启动/进入首页：若本地自然日从未执行或非今天则自动执行一轮并覆盖快照；
-/// 今天已执行过（成功或失败）则直接返回上次快照。不发系统通知。
-pub async fn maybe_auto_run_order_subscribe() -> Result<MaybeAutoRunOutcome, String> {
+/// 启动/进入首页：仅当配置开启「启动自动查询」且本地自然日门控通过时才执行；
+/// 实际执行完成后走与流水线/合并监控相同的系统通知（桌面横幅 + 原生弹窗）。
+pub async fn maybe_auto_run_order_subscribe(
+    app: &AppHandle,
+) -> Result<MaybeAutoRunOutcome, String> {
     let snapshot = load_order_subscribe_result()?;
+    let config = load_order_subscribe_config()?;
+    if !config.auto_run_on_startup {
+        return Ok(MaybeAutoRunOutcome {
+            did_run: false,
+            snapshot,
+        });
+    }
     let today = chrono::Local::now().date_naive();
     if !should_auto_run_from_snapshot(&snapshot, today) {
         return Ok(MaybeAutoRunOutcome {
@@ -840,11 +908,37 @@ pub async fn maybe_auto_run_order_subscribe() -> Result<MaybeAutoRunOutcome, Str
             snapshot,
         });
     }
-    let snapshot = run_order_subscribe_now().await?;
-    Ok(MaybeAutoRunOutcome {
-        did_run: true,
-        snapshot,
-    })
+    match run_order_subscribe_now().await {
+        Ok(snapshot) => {
+            let failed = snapshot
+                .subscriptions
+                .iter()
+                .filter(|item| !item.success)
+                .count();
+            let title = "后道订单订阅 · 启动查询完成";
+            let body = if failed > 0 {
+                format!(
+                    "待办总数 {} · {} 条订阅失败",
+                    snapshot.total, failed
+                )
+            } else {
+                format!("查询成功 · 待办总数 {}", snapshot.total)
+            };
+            let _ = system_notify::show_system_notification(app, title, &body);
+            Ok(MaybeAutoRunOutcome {
+                did_run: true,
+                snapshot,
+            })
+        }
+        Err(err) => {
+            let _ = system_notify::show_system_notification(
+                app,
+                "后道订单订阅 · 启动查询失败",
+                &err,
+            );
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -863,7 +957,13 @@ mod tests {
         assert_eq!(sub.order_states, vec![1, 2, 3, 7, 8]);
         assert!(sub.enabled);
         assert_eq!(sub.bill_month_mode, "current");
-        assert!(sub.biz_types.is_empty());
+        assert_eq!(
+            sub.biz_types,
+            DISPLAY_BIZ_TYPES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        );
         assert!(sub.ins_codes.is_empty());
         assert!(!sub.id.is_empty());
     }
@@ -899,6 +999,7 @@ mod tests {
     #[test]
     fn normalize_config_dedupes_ins_codes() {
         let mut config = OrderSubscribeConfig {
+            auto_run_on_startup: false,
             subscriptions: vec![{
                 let mut s = Subscription::new_default();
                 s.ins_codes = vec![20, 30, 20, 21];
@@ -913,11 +1014,15 @@ mod tests {
     fn map_org_record_maps_id_to_org_account_id() {
         let record = json!({
             "id": 12345,
-            "accountName": "某某人力资源有限公司"
+            "accountName": "某某人力资源有限公司",
+            "orderMonthGjj": 202608,
+            "orderMonthSb": 202607
         });
         let hit = map_org_record(&record).expect("should map");
         assert_eq!(hit.org_account_id, 12345);
         assert_eq!(hit.account_name, "某某人力资源有限公司");
+        assert_eq!(hit.order_month_gjj, 202608);
+        assert_eq!(hit.order_month_sb, 202607);
     }
 
     #[test]
@@ -994,6 +1099,7 @@ mod tests {
     #[test]
     fn validate_rejects_missing_org_and_bad_fixed_month() {
         let mut config = OrderSubscribeConfig {
+            auto_run_on_startup: false,
             subscriptions: vec![{
                 let mut s = Subscription::new_default();
                 s.org_account_id = 0;
@@ -1023,6 +1129,7 @@ mod tests {
             area_name: "济南市".into(),
             bill_month_mode: "fixed".into(),
             bill_month: "202607".into(),
+            business_bill_month: "202608".into(),
             order_states: default_order_states(),
             biz_types: vec!["sbAdd".into(), "gjjStop".into()],
             ins_codes: vec![20, 30],
@@ -1094,8 +1201,28 @@ mod tests {
     fn resolve_bill_month_current_uses_injected_now() {
         let mut sub = sample_sub("a", 1, &[]);
         sub.bill_month_mode = "current".into();
+        sub.business_bill_month.clear();
         let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
         assert_eq!(resolve_bill_month(&sub, now), "202607");
+    }
+
+    #[test]
+    fn resolve_bill_month_current_ignores_business_month() {
+        let mut sub = sample_sub("a", 1, &[]);
+        sub.bill_month_mode = "current".into();
+        sub.business_bill_month = "202608".into();
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        assert_eq!(resolve_bill_month(&sub, now), "202607");
+    }
+
+    #[test]
+    fn business_bill_month_from_org_months_picks_max_valid() {
+        assert_eq!(
+            business_bill_month_from_org_months(202607, 202608),
+            "202608"
+        );
+        assert_eq!(business_bill_month_from_org_months(0, 0), "");
+        assert_eq!(business_bill_month_from_org_months(202613, 202607), "202607");
     }
 
     #[test]
@@ -1147,6 +1274,12 @@ mod tests {
 
         let never = ExecutionSnapshot::default();
         assert!(should_auto_run_from_snapshot(&never, today));
+    }
+
+    #[test]
+    fn auto_run_on_startup_defaults_false() {
+        let config = OrderSubscribeConfig::default();
+        assert!(!config.auto_run_on_startup);
     }
 
     #[test]
@@ -1246,6 +1379,7 @@ mod tests {
         let failing = sample_sub("bad", 3, &["sbFill"]);
 
         let config = OrderSubscribeConfig {
+            auto_run_on_startup: false,
             subscriptions: vec![enabled, disabled, failing],
         };
         let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
@@ -1292,6 +1426,7 @@ mod tests {
         let a = sample_sub("a", 1, &["gjjStop"]);
         let b = sample_sub("b", 2, &["sbStop"]);
         let config = OrderSubscribeConfig {
+            auto_run_on_startup: false,
             subscriptions: vec![a, b],
         };
         let now = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
