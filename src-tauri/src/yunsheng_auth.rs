@@ -192,20 +192,71 @@ pub fn map_auth_error(http_status: u16, body: Option<&Value>) -> Option<String> 
     None
 }
 
+/// 校验云生管理端业务响应。
+///
+/// 成功实测为 `code: 200` + `status: true` + `message: "ok"`；
+/// 部分接口/文档也用 `code: 0`。鉴权失败常见 `code: 30000` + `status: false`。
+/// 避免「业务失败但无 records」被上层当成成功空结果（待办 0）。
+pub fn ensure_yunsheng_business_ok(body: &Value) -> Result<(), String> {
+    if let Some(err) = map_auth_error(200, Some(body)) {
+        return Err(err);
+    }
+
+    let msg = body_message(body).unwrap_or_else(|| "业务失败".to_string());
+
+    if body.get("status").and_then(|v| v.as_bool()) == Some(false) {
+        return Err(format!("云生接口失败: {msg}"));
+    }
+    if body.get("success").and_then(|v| v.as_bool()) == Some(false) {
+        return Err(format!("云生接口失败: {msg}"));
+    }
+
+    if let Some(code) = json_code_as_i64(body.get("code")) {
+        // 0：常见业务成功码；200：云生网关/管理端成功码（勿与 HTTP status 混淆）
+        if !matches!(code, 0 | 200) {
+            return Err(format!("云生接口失败 ({code}): {msg}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn body_message(value: &Value) -> Option<String> {
+    for key in ["msg", "message", "error", "errorMessage", "errorMsg"] {
+        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+            let t = s.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn json_code_as_i64(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    match value {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
 fn looks_like_auth_failure(value: &Value) -> bool {
-    let status = value
-        .get("status")
-        .and_then(|v| v.as_u64())
-        .or_else(|| value.get("code").and_then(|v| v.as_u64()));
-    if status == Some(401) {
-        return true;
+    // HTTP/业务常见鉴权码：401；云生网关常见 30000「非法访问,没有认证」
+    if let Some(code) = json_code_as_i64(value.get("code")).or_else(|| {
+        value
+            .get("status")
+            .and_then(|v| v.as_u64().map(|u| u as i64).or_else(|| v.as_i64()))
+    }) {
+        if code == 401 || code == 30000 {
+            return true;
+        }
     }
 
     let mut texts: Vec<String> = Vec::new();
-    for key in ["msg", "message", "error", "errorMessage", "errorMsg"] {
-        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
-            texts.push(s.to_string());
-        }
+    if let Some(s) = body_message(value) {
+        texts.push(s);
     }
     if let Some(s) = value.as_str() {
         texts.push(s.to_string());
@@ -219,6 +270,11 @@ fn message_indicates_auth_failure(message: &str) -> bool {
     const KEYWORDS: &[&str] = &[
         "未登录",
         "未授权",
+        "没有认证",
+        "非法访问",
+        "认证失败",
+        "无权限",
+        "权限不足",
         "登录失效",
         "登录过期",
         "登录已失效",
@@ -303,6 +359,42 @@ mod tests {
         let body = json!({"message": "Unauthorized"});
         let mapped = map_auth_error(200, Some(&body)).expect("unauthorized should map");
         assert_eq!(mapped, EXPIRED_TOKEN_ERROR);
+    }
+
+    #[test]
+    fn map_auth_error_on_yunsheng_gateway_30000() {
+        // 实测无效 token：HTTP 200 + code 30000 + status:false
+        let body = json!({
+            "code": 30000,
+            "message": "非法访问,没有认证",
+            "status": false
+        });
+        let mapped = map_auth_error(200, Some(&body)).expect("30000 should map");
+        assert_eq!(mapped, EXPIRED_TOKEN_ERROR);
+    }
+
+    #[test]
+    fn ensure_business_ok_accepts_code_zero() {
+        let body = json!({"code": 0, "data": {"records": []}});
+        assert!(ensure_yunsheng_business_ok(&body).is_ok());
+    }
+
+    #[test]
+    fn ensure_business_ok_accepts_yunsheng_code_200() {
+        let body = json!({
+            "code": 200,
+            "message": "ok",
+            "status": true,
+            "data": { "records": [] }
+        });
+        assert!(ensure_yunsheng_business_ok(&body).is_ok());
+    }
+
+    #[test]
+    fn ensure_business_ok_rejects_nonzero_code() {
+        let body = json!({"code": 500, "msg": "服务器繁忙", "status": false});
+        let err = ensure_yunsheng_business_ok(&body).expect_err("nonzero code");
+        assert!(err.contains("500") || err.contains("服务器繁忙"));
     }
 
     #[test]

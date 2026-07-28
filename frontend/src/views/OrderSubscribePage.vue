@@ -343,9 +343,15 @@ const handleRunNow = async () => {
   try {
     const { data } = await runOrderSubscribeNow()
     applySnapshot(data)
-    const failed = (data?.subscriptions || []).filter((item) => !item.success).length
-    if (failed > 0) {
-      message.warning(`执行完成：总数 ${data?.total ?? 0}，${failed} 条订阅失败`)
+    const rows = data?.subscriptions || []
+    const failedRows = rows.filter((item) => !item.success)
+    if (failedRows.length > 0 && failedRows.length === rows.length) {
+      const tip = failedRows[0]?.error || '全部订阅查询失败'
+      message.error(`执行失败：${tip}`)
+    } else if (failedRows.length > 0) {
+      message.warning(
+        `执行完成：待办 ${data?.total ?? 0}，${failedRows.length} 条订阅失败`
+      )
     } else {
       message.success(`执行完成：待办总数 ${data?.total ?? 0}`)
     }

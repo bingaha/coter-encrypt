@@ -578,10 +578,15 @@ pub fn execute_subscriptions_pure(
         }
         let bill_month = resolve_bill_month(sub, now);
         match fetch(sub, &bill_month) {
-            Ok(body) => {
-                let records = extract_records(&body);
-                results.push(aggregate_subscription_success(sub, &bill_month, &records));
-            }
+            Ok(body) => match yunsheng_auth::ensure_yunsheng_business_ok(&body) {
+                Ok(()) => {
+                    let records = extract_records(&body);
+                    results.push(aggregate_subscription_success(sub, &bill_month, &records));
+                }
+                Err(err) => {
+                    results.push(aggregate_subscription_error(sub, &bill_month, err));
+                }
+            },
             Err(err) => {
                 results.push(aggregate_subscription_error(sub, &bill_month, err));
             }
@@ -769,10 +774,8 @@ async fn post_manage_api(path: &str, body: Value) -> Result<Value, String> {
         return Err(format!("云生接口错误 ({status}): {msg}"));
     }
 
-    // 业务层鉴权失败（HTTP 200 但 payload 表示未登录）
-    if let Some(err) = yunsheng_auth::map_auth_error(200, Some(&parsed)) {
-        return Err(err);
-    }
+    // 业务层失败（含鉴权 30000、status:false、code!=0）不得当成成功空列表
+    yunsheng_auth::ensure_yunsheng_business_ok(&parsed)?;
 
     Ok(parsed)
 }
@@ -1369,6 +1372,38 @@ mod tests {
 
         let empty_biz = build_area_breakdowns(&records, &[]);
         assert!(empty_biz[0].counts.iter().all(|c| !c.highlighted));
+    }
+
+    #[test]
+    fn execute_pure_rejects_auth_failure_body_as_error_not_empty_success() {
+        // 无效 token 实测响应：不得记为 success=true、待办 0
+        let sub = sample_sub("auth-bad", 1, &["sbAdd"]);
+        let config = OrderSubscribeConfig {
+            auto_run_on_startup: false,
+            subscriptions: vec![sub],
+        };
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let auth_fail = json!({
+            "code": 30000,
+            "message": "非法访问,没有认证",
+            "status": false
+        });
+        let snapshot = execute_subscriptions_pure(
+            &config,
+            now,
+            "2026-07-28T15:00:00",
+            &|_sub, _bill| Ok(auth_fail.clone()),
+        );
+        assert_eq!(snapshot.subscriptions.len(), 1);
+        let row = &snapshot.subscriptions[0];
+        assert!(!row.success);
+        assert_eq!(row.subscribed_total, 0);
+        assert_eq!(snapshot.total, 0);
+        let err = row.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("登录已失效") || err.contains("没有认证") || err.contains("30000"),
+            "unexpected err: {err}"
+        );
     }
 
     #[test]
