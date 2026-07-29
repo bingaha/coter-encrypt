@@ -36,8 +36,8 @@ import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
 import { getMergeMonitorSnapshot } from '@/api/mergeMonitor'
 import {
  getHomePendingSummary,
- maybeAutoRunOrderSubscribe
-} from '@/api/orderSubscribe'
+ maybeAutoRunOrderInsSubscribe
+} from '@/api/orderInsSubscribe'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -127,13 +127,13 @@ const toolEntries = [
  capabilities: ['多仓库', '作者白名单', 'AI评审']
  },
  {
- id: 'order-subscribe',
- title: '后道订单订阅',
- routeName: 'OrderSubscribeTool',
+ id: 'order-ins-subscribe',
+ title: '后道险种订单订阅',
+ routeName: 'OrderInsSubscribeTool',
  icon: ListOutline,
  status: '可用',
- description: '按机构与账期订阅后道订单待办，配置过滤条件并持久化。',
- capabilities: ['多订阅', '地区机构搜索', '账期过滤']
+ description: '按地区、办理类型与账单月订阅险种订单待办，配置过滤条件并持久化。',
+ capabilities: ['多订阅', '办理类型', '账单月']
  }
 ]
 
@@ -148,9 +148,9 @@ let unlistenMerge = null
 let mergePollTimer = null
 
 const homePendingTotal = ref(0)
-/** 后道订单工具卡角标 */
-const orderSubscribeTotal = ref(0)
-const orderSubscribeRunning = ref(false)
+/** 后道险种订单订阅工具卡角标 */
+const orderInsSubscribeTotal = ref(0)
+const orderInsSubscribeRunning = ref(false)
 
 const pipelineStatusLabel = computed(() => {
   if (pipelineMonitorMode.value === 'loop') return '循环监控'
@@ -168,22 +168,22 @@ const mergeStatusLabel = computed(() => {
   return '可用'
 })
 
-const orderSubscribeStatusLabel = computed(() => {
-  if (orderSubscribeRunning.value) return '刷新中'
-  if (orderSubscribeTotal.value > 0) return `待办 ${orderSubscribeTotal.value}`
+const orderInsSubscribeStatusLabel = computed(() => {
+  if (orderInsSubscribeRunning.value) return '刷新中'
+  if (orderInsSubscribeTotal.value > 0) return `待办 ${orderInsSubscribeTotal.value}`
   return '可用'
 })
 
 const applyPendingSummary = (summary) => {
   const sources = Array.isArray(summary?.sources) ? summary.sources : []
-  const orderSource = sources.find((s) => s.id === 'order-subscribe')
-  orderSubscribeTotal.value = Number(orderSource?.count) || 0
+  const orderSource = sources.find((s) => s.id === 'order-ins-subscribe')
+  orderInsSubscribeTotal.value = Number(orderSource?.count) || 0
   homePendingTotal.value = Number(summary?.total) || 0
 }
 
-const applyOrderSubscribeSnapshot = (snapshot) => {
+const applyOrderInsSubscribeSnapshot = (snapshot) => {
   const total = Number(snapshot?.total) || 0
-  orderSubscribeTotal.value = total
+  orderInsSubscribeTotal.value = total
   homePendingTotal.value = total
 }
 
@@ -208,7 +208,7 @@ const refreshMergeBadge = async () => {
 }
 
 /** 立即展示上次快照总数（不触发网络） */
-const refreshOrderSubscribeBadge = async () => {
+const refreshOrderInsSubscribeBadge = async () => {
   try {
     const { data } = await getHomePendingSummary()
     applyPendingSummary(data)
@@ -218,15 +218,15 @@ const refreshOrderSubscribeBadge = async () => {
 }
 
 /** 按本地自然日门控：必要时自动执行一轮并覆盖角标/顶栏；系统通知由 Rust 侧发出 */
-const runOrderSubscribeHomeBootstrap = async () => {
-  orderSubscribeRunning.value = true
+const runOrderInsSubscribeHomeBootstrap = async () => {
+  orderInsSubscribeRunning.value = true
   try {
-    const { data } = await maybeAutoRunOrderSubscribe()
-    applyOrderSubscribeSnapshot(data?.snapshot)
+    const { data } = await maybeAutoRunOrderInsSubscribe()
+    applyOrderInsSubscribeSnapshot(data?.snapshot)
   } catch {
     // 失败时保留已展示的快照总数；系统通知已在后端弹出
   } finally {
-    orderSubscribeRunning.value = false
+    orderInsSubscribeRunning.value = false
   }
 }
 
@@ -249,14 +249,14 @@ const handleOpenConfigDir = async () => {
 let homeBootstrapped = false
 
 const refreshHomePendingFromSnapshot = async () => {
-  await refreshOrderSubscribeBadge()
+  await refreshOrderInsSubscribeBadge()
 }
 
 /** 进程内只跑一次启动自动查询（同步占位，避免 onMounted/onActivated 竞态双跑） */
 const kickOffStartupAutoRunOnce = async () => {
   if (homeBootstrapped) return
   homeBootstrapped = true
-  await runOrderSubscribeHomeBootstrap()
+  await runOrderInsSubscribeHomeBootstrap()
 }
 
 onActivated(async () => {
@@ -437,11 +437,11 @@ onBeforeUnmount(() => {
  (tool.id === 'pipeline-monitor' &&
  (pipelineMonitorMode === 'loop' || pipelineMonitorMode === 'single')) ||
  (tool.id === 'merge-monitor' && mergeMonitorRunning) ||
- (tool.id === 'order-subscribe' && orderSubscribeRunning),
+ (tool.id === 'order-ins-subscribe' && orderInsSubscribeRunning),
  'is-pending':
- tool.id === 'order-subscribe' &&
- !orderSubscribeRunning &&
- orderSubscribeTotal > 0
+ tool.id === 'order-ins-subscribe' &&
+ !orderInsSubscribeRunning &&
+ orderInsSubscribeTotal > 0
  }"
  >
  <template v-if="tool.id === 'pipeline-monitor'">
@@ -450,8 +450,8 @@ onBeforeUnmount(() => {
  <template v-else-if="tool.id === 'merge-monitor'">
  {{ mergeStatusLabel }}
  </template>
- <template v-else-if="tool.id === 'order-subscribe'">
- {{ orderSubscribeStatusLabel }}
+ <template v-else-if="tool.id === 'order-ins-subscribe'">
+ {{ orderInsSubscribeStatusLabel }}
  </template>
  <template v-else>
  {{ tool.status }}

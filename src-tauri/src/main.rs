@@ -7,7 +7,7 @@ mod executor;
 mod har;
 mod http_client;
 mod merge_monitor;
-mod order_subscribe;
+mod order_ins_subscribe;
 mod oss_transfer;
 mod pipeline_monitor;
 mod project_store;
@@ -386,66 +386,66 @@ async fn login_yunsheng(
 }
 
 #[tauri::command]
-fn load_order_subscribe_config() -> Result<order_subscribe::OrderSubscribeConfig, String> {
-    order_subscribe::load_order_subscribe_config()
+fn load_order_ins_subscribe_config() -> Result<order_ins_subscribe::OrderInsSubscribeConfig, String> {
+    order_ins_subscribe::load_order_ins_subscribe_config()
 }
 
 #[tauri::command]
-fn save_order_subscribe_config(
-    config: order_subscribe::OrderSubscribeConfig,
-) -> Result<order_subscribe::OrderSubscribeConfig, String> {
-    order_subscribe::save_order_subscribe_config(config)
+fn save_order_ins_subscribe_config(
+    config: order_ins_subscribe::OrderInsSubscribeConfig,
+) -> Result<order_ins_subscribe::OrderInsSubscribeConfig, String> {
+    order_ins_subscribe::save_order_ins_subscribe_config(config)
 }
 
 #[tauri::command]
-async fn list_order_subscribe_areas(
+async fn list_order_ins_subscribe_areas(
     app: tauri::AppHandle,
-) -> Result<Vec<order_subscribe::AreaOption>, String> {
-    order_subscribe::list_order_subscribe_areas(&app).await
+) -> Result<Vec<order_ins_subscribe::AreaOption>, String> {
+    order_ins_subscribe::list_order_ins_subscribe_areas(&app).await
 }
 
 #[tauri::command]
-async fn search_order_subscribe_orgs(
+async fn search_order_ins_subscribe_orgs(
     app: tauri::AppHandle,
-    request: order_subscribe::SearchOrgAccountsRequest,
-) -> Result<Vec<order_subscribe::OrgAccountHit>, String> {
-    order_subscribe::search_order_subscribe_orgs(&app, request).await
+    request: order_ins_subscribe::SearchOrgAccountsRequest,
+) -> Result<Vec<order_ins_subscribe::OrgAccountHit>, String> {
+    order_ins_subscribe::search_order_ins_subscribe_orgs(&app, request).await
 }
 
 #[tauri::command]
-fn load_order_subscribe_result() -> Result<order_subscribe::ExecutionSnapshot, String> {
-    order_subscribe::load_order_subscribe_result()
+fn load_order_ins_subscribe_result() -> Result<order_ins_subscribe::ExecutionSnapshot, String> {
+    order_ins_subscribe::load_order_ins_subscribe_result()
 }
 
 #[tauri::command]
-fn clear_order_subscribe_result() -> Result<(), String> {
-    order_subscribe::clear_order_subscribe_result()
+fn clear_order_ins_subscribe_result() -> Result<(), String> {
+    order_ins_subscribe::clear_order_ins_subscribe_result()
 }
 
 #[tauri::command]
-fn set_order_subscribe_auto_run(
+fn set_order_ins_subscribe_auto_run(
     enabled: bool,
-) -> Result<order_subscribe::OrderSubscribeConfig, String> {
-    order_subscribe::set_order_subscribe_auto_run(enabled)
+) -> Result<order_ins_subscribe::OrderInsSubscribeConfig, String> {
+    order_ins_subscribe::set_order_ins_subscribe_auto_run(enabled)
 }
 
 #[tauri::command]
-async fn run_order_subscribe_now(
+async fn run_order_ins_subscribe_now(
     app: tauri::AppHandle,
-) -> Result<order_subscribe::ExecutionSnapshot, String> {
-    order_subscribe::run_order_subscribe_now(&app).await
+) -> Result<order_ins_subscribe::ExecutionSnapshot, String> {
+    order_ins_subscribe::run_order_ins_subscribe_now(&app).await
 }
 
 #[tauri::command]
-async fn maybe_auto_run_order_subscribe(
+async fn maybe_auto_run_order_ins_subscribe(
     app: tauri::AppHandle,
-) -> Result<order_subscribe::MaybeAutoRunOutcome, String> {
-    order_subscribe::maybe_auto_run_order_subscribe(&app).await
+) -> Result<order_ins_subscribe::MaybeAutoRunOutcome, String> {
+    order_ins_subscribe::maybe_auto_run_order_ins_subscribe(&app).await
 }
 
 #[tauri::command]
-fn get_home_pending_summary() -> Result<order_subscribe::HomePendingSummary, String> {
-    order_subscribe::get_home_pending_summary()
+fn get_home_pending_summary() -> Result<order_ins_subscribe::HomePendingSummary, String> {
+    order_ins_subscribe::get_home_pending_summary()
 }
 
 fn main() {
@@ -518,21 +518,21 @@ fn main() {
             load_yunsheng_auth_token,
             save_yunsheng_auth_token,
             login_yunsheng,
-            load_order_subscribe_config,
-            save_order_subscribe_config,
-            list_order_subscribe_areas,
-            search_order_subscribe_orgs,
-            load_order_subscribe_result,
-            clear_order_subscribe_result,
-            set_order_subscribe_auto_run,
-            run_order_subscribe_now,
-            maybe_auto_run_order_subscribe,
+            load_order_ins_subscribe_config,
+            save_order_ins_subscribe_config,
+            list_order_ins_subscribe_areas,
+            search_order_ins_subscribe_orgs,
+            load_order_ins_subscribe_result,
+            clear_order_ins_subscribe_result,
+            set_order_ins_subscribe_auto_run,
+            run_order_ins_subscribe_now,
+            maybe_auto_run_order_ins_subscribe,
             get_home_pending_summary
         ])
         .build(tauri::generate_context!())
         .expect("error while building CoterEncrypt")
         .run(|app_handle, event| {
-            // setup 时窗口偶发尚未就绪；Ready 再设一次，避免一直落在 tauri.conf 里的旧标题
+            // setup 与 Ready 各设一次，确保窗口就绪后标题带上包版本
             if let tauri::RunEvent::Ready = event {
                 apply_window_title_with_version(app_handle);
             }
@@ -540,8 +540,9 @@ fn main() {
 }
 
 fn apply_window_title_with_version(app: &tauri::AppHandle) {
-    let version = app.package_info().version.to_string();
+    let version = env!("CARGO_PKG_VERSION");
+    let title = format!("加解密工具 v{version}");
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_title(&format!("加解密工具 v{version}"));
+        let _ = window.set_title(&title);
     }
 }

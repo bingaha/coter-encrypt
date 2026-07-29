@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, provide } from 'vue'
+import { ref, computed, provide, onMounted } from 'vue'
 import {
  NConfigProvider,
  NMessageProvider,
@@ -9,6 +9,7 @@ import {
  darkTheme
 } from 'naive-ui'
 import SettingsModal from '@/components/SettingsModal.vue'
+import { syncAppWindowTitle } from '@/composables/useAppWindowTitle'
 
 // 主题状态管理，从 localStorage 读取初始值
 const isDarkMode = ref(localStorage.getItem('theme') === 'dark')
@@ -25,6 +26,10 @@ const toggleTheme = () => {
 // 提供给子组件使用
 provide('isDarkMode', isDarkMode)
 provide('toggleTheme', toggleTheme)
+
+onMounted(() => {
+  syncAppWindowTitle()
+})
 </script>
 
 <template>

@@ -7,7 +7,7 @@ import RobotFeedbackPage from '../views/RobotFeedbackPage.vue'
 import OssTransferPage from '../views/OssTransferPage.vue'
 import PipelineMonitorPage from '../views/PipelineMonitorPage.vue'
 import MergeMonitorPage from '../views/MergeMonitorPage.vue'
-import OrderSubscribePage from '../views/OrderSubscribePage.vue'
+import OrderInsSubscribePage from '../views/OrderInsSubscribePage.vue'
 
 const routes = [
   {
@@ -51,9 +51,14 @@ const routes = [
     component: MergeMonitorPage
   },
   {
+    path: '/order-ins-subscribe',
+    name: 'OrderInsSubscribeTool',
+    component: OrderInsSubscribePage
+  },
+  // 旧「后道订单订阅」路由，避免 WebView/书签仍打开已删除页面
+  {
     path: '/order-subscribe',
-    name: 'OrderSubscribeTool',
-    component: OrderSubscribePage
+    redirect: { name: 'OrderInsSubscribeTool' }
   }
 ]
 

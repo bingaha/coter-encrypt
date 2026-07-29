@@ -21,7 +21,9 @@ import {
   ArrowBackOutline,
   ChevronDownOutline,
   ChevronUpOutline,
+  CopyOutline,
   KeyOutline,
+  MenuOutline,
   MoonOutline,
   PlayOutline,
   SaveOutline,
@@ -30,23 +32,29 @@ import {
   TrashOutline,
   ListOutline
 } from '@vicons/ionicons5'
+import draggable from 'vuedraggable'
 import { useConfigStore } from '@/store'
 import { loadYunshengAuthToken } from '@/api/yunshengAuth'
 import { useAppSettings } from '@/composables/useAppSettings'
 import {
-  BIZ_TYPE_OPTIONS,
+  ACCOUNT_STATUS_OPTIONS,
+  BILL_MONTH_REL_OPTIONS,
+  billMonthTokenLabel,
   createDefaultSubscription,
+  currentYyyymm,
+  isFixedBillMonth,
   INS_CODE_OPTIONS,
-  listOrderSubscribeAreas,
-  clearOrderSubscribeResult,
-  loadOrderSubscribeConfig,
-  loadOrderSubscribeResult,
+  listOrderInsSubscribeAreas,
+  clearOrderInsSubscribeResult,
+  loadOrderInsSubscribeConfig,
+  loadOrderInsSubscribeResult,
+  normalizeBillMonthToken,
   ORDER_STATE_OPTIONS,
-  runOrderSubscribeNow,
-  saveOrderSubscribeConfig,
-  searchOrderSubscribeOrgs,
-  setOrderSubscribeAutoRun
-} from '@/api/orderSubscribe'
+  runOrderInsSubscribeNow,
+  saveOrderInsSubscribeConfig,
+  searchOrderInsSubscribeOrgs,
+  setOrderInsSubscribeAutoRun
+} from '@/api/orderInsSubscribe'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -103,10 +111,8 @@ const selectedOrgs = ref([])
 /** 展开的订阅 id；默认折叠，保证列表一行一条 */
 const expandedSubIds = ref(new Set())
 
-const billMonthModeOptions = [
-  { label: '当前月（跟随系统时间）', value: 'current' },
-  { label: '固定月份', value: 'fixed' }
-]
+const billMonthRelOptions = BILL_MONTH_REL_OPTIONS
+const accountStatusOptions = ACCOUNT_STATUS_OPTIONS
 
 const isSubExpanded = (id) => expandedSubIds.value.has(String(id || ''))
 
@@ -119,159 +125,126 @@ const toggleSubExpanded = (id) => {
   expandedSubIds.value = next
 }
 
+const billMonthSelectValue = (stored) =>
+  isFixedBillMonth(stored) ? '__fixed__' : normalizeBillMonthToken(stored)
+
 const billMonthSummary = (sub) => {
-  if (sub?.billMonthMode === 'fixed' && sub?.billMonth) {
-    return `固定 ${sub.billMonth}`
-  }
-  return '当前月'
+  const a = billMonthTokenLabel(sub?.billMonth1)
+  const b = billMonthTokenLabel(sub?.billMonth2)
+  return a === b ? a : `${a}～${b}`
 }
 
-const countOf = (row, bizType) => Number(row?.counts?.[bizType]?.count) || 0
-const isCountHot = (row, bizType) => !!row?.counts?.[bizType]?.highlighted
-
-const renderBizCount = (row, bizType) => {
-  const n = countOf(row, bizType)
-  const subscribed = isCountHot(row, bizType)
-  // 仅「已订阅且 > 0」高亮绿；已订阅且为 0 用正文黑色；未订阅灰色
-  const hot = subscribed && n > 0
-  return h(
-    'span',
-    {
-      style: {
-        color: hot ? '#0c7a43' : subscribed ? 'var(--n-text-color, #1f2225)' : '#9ca3af',
-        fontWeight: hot ? '700' : '500',
-        fontVariantNumeric: 'tabular-nums'
-      }
-    },
-    String(n)
-  )
+const onBillMonthKindChange = (sub, field, kind) => {
+  if (kind === '__fixed__') {
+    sub[field] = isFixedBillMonth(sub[field]) ? String(sub[field]).trim() : currentYyyymm()
+  } else {
+    sub[field] = kind || 'current'
+  }
 }
 
-const resultTableRows = computed(() => {
-  const rows = []
-  for (const item of snapshot.value.subscriptions || []) {
-    const fallbackArea = item.areaName || item.configAreaName || '—'
-    if (!item.success) {
-      rows.push({
-        key: `${item.subscriptionId}-err`,
-        success: false,
-        billMonth: item.billMonth || '—',
-        areaName: fallbackArea,
-        pending: 0,
-        error: item.error || '查询失败',
-        counts: Object.fromEntries(
-          BIZ_TYPE_OPTIONS.map((opt) => [opt.value, { count: 0, highlighted: false }])
-        )
-      })
-      continue
-    }
-    const areas = item.areas || []
-    if (!areas.length) {
-      rows.push({
-        key: `${item.subscriptionId}-empty`,
-        success: true,
-        billMonth: item.billMonth || '—',
-        areaName: fallbackArea,
-        pending: Number(item.subscribedTotal) || 0,
-        error: '',
-        counts: Object.fromEntries(
-          BIZ_TYPE_OPTIONS.map((opt) => [opt.value, { count: 0, highlighted: false }])
-        )
-      })
-      continue
-    }
-    for (const area of areas) {
-      const counts = {}
-      let pending = 0
-      for (const c of area.counts || []) {
-        const bizType = c.bizType || c.biz_type
-        const highlighted = !!(c.highlighted ?? c.isHighlighted)
-        const count = Number(c.count) || 0
-        counts[bizType] = { count, highlighted }
-        if (highlighted) pending += count
-      }
-      for (const opt of BIZ_TYPE_OPTIONS) {
-        if (!counts[opt.value]) {
-          counts[opt.value] = { count: 0, highlighted: false }
-        }
-      }
-      rows.push({
-        key: `${item.subscriptionId}-${area.areaName}`,
-        success: true,
-        billMonth: item.billMonth || '—',
-        areaName: area.areaName || fallbackArea,
-        pending,
-        error: '',
-        counts
-      })
-    }
-  }
-  return rows
-})
+const accountStatusLabel = (status) => {
+  const hit = ACCOUNT_STATUS_OPTIONS.find((item) => item.value === Number(status))
+  return hit?.label || '未选办理类型'
+}
 
-const resultTableColumns = computed(() => {
-  const bizCols = BIZ_TYPE_OPTIONS.map((opt) => ({
-    title: opt.label,
-    key: opt.value,
-    width: 88,
-    align: 'right',
-    render: (row) => renderBizCount(row, opt.value)
+const insCodeLabel = (code) => {
+  const hit = INS_CODE_OPTIONS.find((item) => item.value === Number(code))
+  return hit?.label || String(code)
+}
+
+const formatInsCodesFull = (codes) => {
+  const list = Array.isArray(codes) ? codes.map(insCodeLabel).filter(Boolean) : []
+  return list.length ? list.join('、') : '不限'
+}
+
+const resultTableRows = computed(() =>
+  (snapshot.value.subscriptions || []).map((item) => ({
+    key: String(item.subscriptionId || Math.random()),
+    success: !!item.success,
+    billMonth: item.billMonth || '—',
+    areaName: item.areaName || '—',
+    orgCount: Number(item.orgCount) || 0,
+    accountStatus: Number(item.accountStatus) || 0,
+    accountStatusText: accountStatusLabel(item.accountStatus),
+    insCodesText: formatInsCodesFull(item.insCodes),
+    pending: Number(item.subscribedTotal) || 0,
+    error: item.error || ''
   }))
-  return [
-    {
-      title: '地区',
-      key: 'areaName',
-      ellipsis: { tooltip: true },
-      minWidth: 120
-    },
-    {
-      title: '状态',
-      key: 'success',
-      width: 72,
-      render: (row) =>
-        h(
-          NTag,
-          {
-            size: 'small',
-            bordered: false,
-            type: row.success ? 'success' : 'error',
-            title: row.error || undefined
-          },
-          { default: () => (row.success ? '成功' : '失败') }
-        )
-    },
-    {
-      title: '月份',
-      key: 'billMonth',
-      width: 88
-    },
-    ...bizCols,
-    {
-      title: '待办',
-      key: 'pending',
-      width: 72,
-      align: 'right',
-      render: (row) =>
-        h(
-          'strong',
-          {
-            style: {
-              color: row.success ? '#18a058' : undefined,
-              fontVariantNumeric: 'tabular-nums'
-            }
-          },
-          String(row.pending ?? 0)
-        )
-    }
-  ]
-})
+)
+
+const resultTableColumns = computed(() => [
+  {
+    title: '地区',
+    key: 'areaName',
+    width: 88,
+    ellipsis: { tooltip: true }
+  },
+  {
+    title: '主体数',
+    key: 'orgCount',
+    width: 72,
+    align: 'right',
+    render: (row) => (row.orgCount > 0 ? String(row.orgCount) : '全部')
+  },
+  {
+    title: '险种',
+    key: 'insCodesText',
+    minWidth: 120,
+    ellipsis: { tooltip: true }
+  },
+  {
+    title: '办理类型',
+    key: 'accountStatusText',
+    width: 88,
+    ellipsis: { tooltip: true }
+  },
+  {
+    title: '状态',
+    key: 'success',
+    width: 64,
+    render: (row) =>
+      h(
+        NTag,
+        {
+          size: 'small',
+          bordered: false,
+          type: row.success ? 'success' : 'error',
+          title: row.error || undefined
+        },
+        { default: () => (row.success ? '成功' : '失败') }
+      )
+  },
+  {
+    title: '账单月',
+    key: 'billMonth',
+    width: 120,
+    ellipsis: { tooltip: true }
+  },
+  {
+    title: '待办',
+    key: 'pending',
+    width: 72,
+    align: 'right',
+    render: (row) =>
+      h(
+        'strong',
+        {
+          style: {
+            color: row.success ? '#18a058' : undefined,
+            fontVariantNumeric: 'tabular-nums'
+          }
+        },
+        row.success ? String(row.pending ?? 0) : '—'
+      )
+  }
+])
 
 const orgCountOf = (sub) => (Array.isArray(sub?.orgAccounts) ? sub.orgAccounts.length : 0)
 
 const orgDisplayText = (sub) => {
   const n = orgCountOf(sub)
   if (!sub?.areaName && !n) return ''
-  if (!n) return sub.areaName || ''
+  if (!n) return `${sub.areaName || ''} · 全部主体`
   return `${sub.areaName || '未选地区'} · ${n} 个主体`
 }
 
@@ -303,7 +276,7 @@ const areaNameOf = (areaId) => {
 const loadAreas = async () => {
   loadingAreas.value = true
   try {
-    const { data } = await listOrderSubscribeAreas()
+    const { data } = await listOrderInsSubscribeAreas()
     areas.value = data || []
   } catch (error) {
     message.error(error?.message || '加载地区失败')
@@ -321,28 +294,34 @@ const applySnapshot = (data) => {
   }
 }
 
+const normalizeSubscriptionItem = (item) => ({
+  ...createDefaultSubscription(),
+  ...item,
+  orgAccounts: Array.isArray(item.orgAccounts)
+    ? item.orgAccounts.map((org) => ({
+        orgAccountId: Number(org.orgAccountId) || 0,
+        accountName: String(org.accountName || '').trim()
+      }))
+    : [],
+  billMonth1: normalizeBillMonthToken(item.billMonth1),
+  billMonth2: normalizeBillMonthToken(item.billMonth2),
+  accountStatus: [1, 2, 3, 4, 5].includes(Number(item.accountStatus))
+    ? Number(item.accountStatus)
+    : null,
+  orderStates: Array.isArray(item.orderStates) ? [...item.orderStates] : [],
+  insCodes: Array.isArray(item.insCodes) ? [...item.insCodes] : []
+})
+
 const loadAll = async () => {
   loading.value = true
   try {
     const [configRes, tokenRes, resultRes] = await Promise.all([
-      loadOrderSubscribeConfig(),
+      loadOrderInsSubscribeConfig(),
       loadYunshengAuthToken().catch(() => ({ data: { cookies: '' } })),
-      loadOrderSubscribeResult().catch(() => ({ data: null }))
+      loadOrderInsSubscribeResult().catch(() => ({ data: null }))
     ])
     autoRunOnStartup.value = !!configRes.data?.autoRunOnStartup
-    subscriptions.value = (configRes.data?.subscriptions || []).map((item) => ({
-      ...createDefaultSubscription(),
-      ...item,
-      orgAccounts: Array.isArray(item.orgAccounts)
-        ? item.orgAccounts.map((org) => ({
-            orgAccountId: Number(org.orgAccountId) || 0,
-            accountName: String(org.accountName || '').trim()
-          }))
-        : [],
-      orderStates: Array.isArray(item.orderStates) ? [...item.orderStates] : [],
-      bizTypes: Array.isArray(item.bizTypes) ? [...item.bizTypes] : [],
-      insCodes: Array.isArray(item.insCodes) ? [...item.insCodes] : []
-    }))
+    subscriptions.value = (configRes.data?.subscriptions || []).map(normalizeSubscriptionItem)
     expandedSubIds.value = new Set()
     cookies.value = tokenRes.data?.cookies || ''
     applySnapshot(resultRes.data)
@@ -356,7 +335,7 @@ const loadAll = async () => {
 const handleRunNow = async () => {
   running.value = true
   try {
-    const { data } = await runOrderSubscribeNow()
+    const { data } = await runOrderInsSubscribeNow()
     applySnapshot(data)
     const rows = data?.subscriptions || []
     const failedRows = rows.filter((item) => !item.success)
@@ -386,7 +365,7 @@ const handleClearResult = () => {
     onPositiveClick: async () => {
       clearingResult.value = true
       try {
-        await clearOrderSubscribeResult()
+        await clearOrderInsSubscribeResult()
         applySnapshot(null)
         message.success('执行结果已删除')
       } catch (error) {
@@ -403,7 +382,7 @@ const handleAutoRunToggle = async (value) => {
   const previous = autoRunOnStartup.value
   autoRunOnStartup.value = value
   try {
-    const { data } = await setOrderSubscribeAutoRun(value)
+    const { data } = await setOrderInsSubscribeAutoRun(value)
     autoRunOnStartup.value = !!data?.autoRunOnStartup
     message.success(value ? '已开启启动时自动查询' : '已关闭启动时自动查询')
   } catch (error) {
@@ -428,6 +407,20 @@ const addSubscription = () => {
   const next = new Set(expandedSubIds.value)
   next.add(String(created.id))
   expandedSubIds.value = next
+}
+
+const duplicateSubscription = (index) => {
+  const source = subscriptions.value[index]
+  if (!source) return
+  const cloned = normalizeSubscriptionItem({
+    ...JSON.parse(JSON.stringify(source)),
+    id: createDefaultSubscription().id
+  })
+  subscriptions.value.splice(index + 1, 0, cloned)
+  const next = new Set(expandedSubIds.value)
+  next.add(String(cloned.id))
+  expandedSubIds.value = next
+  message.success('已复制订阅')
 }
 
 const removeSubscription = (index) => {
@@ -469,7 +462,7 @@ const handleSearchOrgs = async () => {
   }
   searchingOrgs.value = true
   try {
-    const { data } = await searchOrderSubscribeOrgs({
+    const { data } = await searchOrderInsSubscribeOrgs({
       areaId: orgPickerAreaId.value,
       accountName: String(orgPickerKeyword.value || '').trim(),
       pageNo: 1,
@@ -510,10 +503,6 @@ const applyOrgPicker = () => {
     message.warning('请先选择地区')
     return
   }
-  if (!selectedOrgs.value.length) {
-    message.warning('请至少选择一个主体')
-    return
-  }
   const areaId = orgPickerAreaId.value
   const sub = subscriptions.value[index]
   sub.areaId = areaId
@@ -523,7 +512,11 @@ const applyOrgPicker = () => {
     accountName: String(org.accountName || '').trim()
   }))
   orgPickerVisible.value = false
-  message.success(`已选择 ${sub.orgAccounts.length} 个主体`)
+  message.success(
+    sub.orgAccounts.length
+      ? `已选择 ${sub.orgAccounts.length} 个主体`
+      : '已选择地区（全部主体）'
+  )
 }
 
 const buildConfigPayload = () => ({
@@ -539,24 +532,28 @@ const buildConfigPayload = () => ({
           accountName: String(org.accountName || '').trim()
         }))
       : [],
-    billMonthMode: item.billMonthMode === 'fixed' ? 'fixed' : 'current',
-    billMonth: String(item.billMonth || '').trim(),
+    billMonth1: normalizeBillMonthToken(item.billMonth1),
+    billMonth2: normalizeBillMonthToken(item.billMonth2),
+    accountStatus: [1, 2, 3, 4, 5].includes(Number(item.accountStatus))
+      ? Number(item.accountStatus)
+      : 0,
     orderStates: Array.isArray(item.orderStates) ? item.orderStates.map(Number) : [],
-    bizTypes: Array.isArray(item.bizTypes) ? [...item.bizTypes] : [],
     insCodes: Array.isArray(item.insCodes) ? item.insCodes.map(Number) : []
   }))
 })
 
 const handleSave = async () => {
+  for (const [index, sub] of subscriptions.value.entries()) {
+    if (![1, 2, 3, 4, 5].includes(Number(sub.accountStatus))) {
+      message.warning(`订阅 ${index + 1}：请选择办理类型`)
+      return
+    }
+  }
   saving.value = true
   try {
-    const { data } = await saveOrderSubscribeConfig(buildConfigPayload())
+    const { data } = await saveOrderInsSubscribeConfig(buildConfigPayload())
     autoRunOnStartup.value = !!data?.autoRunOnStartup
-    subscriptions.value = (data?.subscriptions || []).map((item) => ({
-      ...createDefaultSubscription(),
-      ...item,
-      orgAccounts: Array.isArray(item.orgAccounts) ? [...item.orgAccounts] : []
-    }))
+    subscriptions.value = (data?.subscriptions || []).map(normalizeSubscriptionItem)
     message.success('所有订阅已保存')
   } catch (error) {
     message.error(error?.message || '保存失败')
@@ -585,8 +582,8 @@ onMounted(async () => {
           <n-icon :size="22"><ListOutline /></n-icon>
         </div>
         <div class="title-copy">
-          <h1>后道订单订阅</h1>
-          <n-text depth="3">配置订阅 · 手动执行 · 查看待办明细</n-text>
+          <h1>后道险种订单订阅</h1>
+          <n-text depth="3">配置订阅 · 手动执行 · 查看险种订单待办</n-text>
         </div>
       </div>
       <div class="right">
@@ -649,7 +646,7 @@ onMounted(async () => {
               <template v-if="hasSnapshot">
                 上次执行 {{ snapshot.executedAt || '—' }} · 待办总数
                 <span class="total-num">{{ snapshot.total }}</span>
-                （绿色=已订阅且有待办，黑色=已订阅为 0，灰色=未订阅；每订阅仅统计前 100 条订单）
+                （每条订阅待办 = 上游险种订单列表 total）
               </template>
               <template v-else>尚未执行；保存订阅后点击「立即执行」</template>
             </n-text>
@@ -669,7 +666,7 @@ onMounted(async () => {
           :columns="resultTableColumns"
           :data="resultTableRows"
           :row-key="(row) => row.key"
-          :scroll-x="980"
+          :scroll-x="720"
           :max-height="360"
         />
       </section>
@@ -679,7 +676,7 @@ onMounted(async () => {
           <div class="panel-title-copy">
             <strong>订阅列表</strong>
             <n-text depth="3" class="panel-hint">
-              默认折叠为一行；展开后可改地区主体、筛选条件与订阅业务。停用订阅不参与执行。
+              默认折叠为一行；左侧拖拽排序，可复制订阅。展开后改地区、主体（可空）、办理类型、账单月与筛选。停用订阅不参与执行。
             </n-text>
           </div>
           <div class="panel-title-actions">
@@ -702,52 +699,84 @@ onMounted(async () => {
           <n-text depth="3">暂无订阅，点击「新增订阅」开始配置</n-text>
         </div>
 
-        <article
-          v-for="(sub, index) in subscriptions"
-          :key="sub.id || index"
-          class="sub-card"
-          :class="{ 'is-collapsed': !isSubExpanded(sub.id) }"
+        <draggable
+          v-else
+          v-model="subscriptions"
+          item-key="id"
+          handle=".sub-drag-handle"
+          ghost-class="sub-card-ghost"
+          chosen-class="sub-card-chosen"
+          drag-class="sub-card-drag"
+          :animation="180"
+          class="sub-list"
         >
-          <div
-            class="sub-card-head"
-            role="button"
-            tabindex="0"
-            @click="toggleSubExpanded(sub.id)"
-            @keydown.enter.prevent="toggleSubExpanded(sub.id)"
-            @keydown.space.prevent="toggleSubExpanded(sub.id)"
-          >
-            <div class="sub-card-title">
-              <span class="sub-switch-wrap" @click.stop>
-                <n-switch v-model:value="sub.enabled" size="small" />
-              </span>
-              <strong class="sub-name">{{ sub.areaName || `订阅 ${index + 1}` }}</strong>
-              <n-tag size="small" :bordered="false">{{ orgCountOf(sub) }} 个主体</n-tag>
-              <n-tag size="small" :bordered="false">{{ billMonthSummary(sub) }}</n-tag>
-              <n-tag v-if="!sub.enabled" size="small" type="warning" :bordered="false">已禁用</n-tag>
-            </div>
-            <div class="sub-card-actions">
-              <n-button
-                quaternary
-                circle
-                type="error"
-                @click.stop="removeSubscription(index)"
+          <template #item="{ element: sub, index }">
+            <article
+              class="sub-card"
+              :class="{ 'is-collapsed': !isSubExpanded(sub.id) }"
+            >
+              <div
+                class="sub-card-head"
+                role="button"
+                tabindex="0"
+                @click="toggleSubExpanded(sub.id)"
+                @keydown.enter.prevent="toggleSubExpanded(sub.id)"
+                @keydown.space.prevent="toggleSubExpanded(sub.id)"
               >
-                <template #icon>
-                  <n-icon><TrashOutline /></n-icon>
-                </template>
-              </n-button>
-              <n-button quaternary circle @click.stop="toggleSubExpanded(sub.id)">
-                <template #icon>
-                  <n-icon>
-                    <ChevronUpOutline v-if="isSubExpanded(sub.id)" />
-                    <ChevronDownOutline v-else />
-                  </n-icon>
-                </template>
-              </n-button>
-            </div>
-          </div>
+                <div class="sub-card-title">
+                  <span
+                    class="sub-drag-handle"
+                    title="拖拽排序"
+                    @click.stop
+                    @keydown.stop
+                  >
+                    <n-icon :size="18"><MenuOutline /></n-icon>
+                  </span>
+                  <span class="sub-switch-wrap" @click.stop>
+                    <n-switch v-model:value="sub.enabled" size="small" />
+                  </span>
+                  <strong class="sub-name">{{ sub.areaName || `订阅 ${index + 1}` }}</strong>
+                  <n-tag size="small" :bordered="false">
+                    {{ orgCountOf(sub) ? `${orgCountOf(sub)} 个主体` : '全部主体' }}
+                  </n-tag>
+                  <n-tag size="small" :bordered="false">{{ accountStatusLabel(sub.accountStatus) }}</n-tag>
+                  <n-tag size="small" :bordered="false">{{ billMonthSummary(sub) }}</n-tag>
+                  <n-tag v-if="!sub.enabled" size="small" type="warning" :bordered="false">已禁用</n-tag>
+                </div>
+                <div class="sub-card-actions">
+                  <n-button
+                    quaternary
+                    circle
+                    title="复制订阅"
+                    @click.stop="duplicateSubscription(index)"
+                  >
+                    <template #icon>
+                      <n-icon><CopyOutline /></n-icon>
+                    </template>
+                  </n-button>
+                  <n-button
+                    quaternary
+                    circle
+                    type="error"
+                    title="删除订阅"
+                    @click.stop="removeSubscription(index)"
+                  >
+                    <template #icon>
+                      <n-icon><TrashOutline /></n-icon>
+                    </template>
+                  </n-button>
+                  <n-button quaternary circle @click.stop="toggleSubExpanded(sub.id)">
+                    <template #icon>
+                      <n-icon>
+                        <ChevronUpOutline v-if="isSubExpanded(sub.id)" />
+                        <ChevronDownOutline v-else />
+                      </n-icon>
+                    </template>
+                  </n-button>
+                </div>
+              </div>
 
-          <div v-if="isSubExpanded(sub.id)" class="sub-card-body" @click.stop>
+              <div v-if="isSubExpanded(sub.id)" class="sub-card-body" @click.stop>
             <div class="form-grid">
               <label>
                 <span>地区 / 主体</span>
@@ -756,7 +785,7 @@ onMounted(async () => {
                     class="org-picker-input"
                     :value="orgDisplayText(sub)"
                     readonly
-                    placeholder="点击选择地区与多个主体"
+                    placeholder="点击选择地区；主体可多选或留空（全部主体）"
                     @click="openOrgPicker(index)"
                   />
                   <n-button secondary @click="openOrgPicker(index)">
@@ -768,16 +797,45 @@ onMounted(async () => {
                 </div>
               </label>
               <label>
-                <span>月份模式</span>
+                <span>办理类型</span>
                 <n-select
-                  v-model:value="sub.billMonthMode"
-                  :options="billMonthModeOptions"
+                  v-model:value="sub.accountStatus"
+                  :options="accountStatusOptions"
+                  placeholder="请选择办理类型"
                 />
               </label>
-              <label v-if="sub.billMonthMode === 'fixed'">
-                <span>固定月份（YYYYMM）</span>
-                <n-input v-model:value="sub.billMonth" placeholder="例如 202607" maxlength="6" />
-              </label>
+              <div class="bill-month-field">
+                <span class="bill-month-label">账单月</span>
+                <div class="bill-month-range">
+                  <n-select
+                    class="bill-month-kind"
+                    :value="billMonthSelectValue(sub.billMonth1)"
+                    :options="billMonthRelOptions"
+                    @update:value="(v) => onBillMonthKindChange(sub, 'billMonth1', v)"
+                  />
+                  <n-input
+                    v-if="isFixedBillMonth(sub.billMonth1)"
+                    v-model:value="sub.billMonth1"
+                    class="bill-month-fixed"
+                    placeholder="YYYYMM"
+                    maxlength="6"
+                  />
+                  <span class="bill-month-tilde">～</span>
+                  <n-select
+                    class="bill-month-kind"
+                    :value="billMonthSelectValue(sub.billMonth2)"
+                    :options="billMonthRelOptions"
+                    @update:value="(v) => onBillMonthKindChange(sub, 'billMonth2', v)"
+                  />
+                  <n-input
+                    v-if="isFixedBillMonth(sub.billMonth2)"
+                    v-model:value="sub.billMonth2"
+                    class="bill-month-fixed"
+                    placeholder="YYYYMM"
+                    maxlength="6"
+                  />
+                </div>
+              </div>
             </div>
 
             <div v-if="orgCountOf(sub)" class="selected-orgs">
@@ -790,6 +848,9 @@ onMounted(async () => {
               >
                 {{ org.accountName || `ID ${org.orgAccountId}` }}
               </n-tag>
+            </div>
+            <div v-else-if="sub.areaId" class="selected-orgs">
+              <n-text depth="3">未选主体：将按该地区全部主体查询</n-text>
             </div>
 
             <div class="filter-block">
@@ -819,34 +880,22 @@ onMounted(async () => {
                 </div>
               </n-checkbox-group>
             </div>
-
-            <div class="filter-block">
-              <div class="filter-title">订阅业务 · 业务类型（勾选计入待办，不含在缴）</div>
-              <n-checkbox-group v-model:value="sub.bizTypes">
-                <div class="check-grid">
-                  <n-checkbox
-                    v-for="opt in BIZ_TYPE_OPTIONS"
-                    :key="opt.value"
-                    :value="opt.value"
-                    :label="opt.label"
-                  />
-                </div>
-              </n-checkbox-group>
-            </div>
           </div>
-        </article>
+            </article>
+          </template>
+        </draggable>
       </section>
     </div>
 
     <n-modal
       v-model:show="orgPickerVisible"
       preset="card"
-      title="选择主体"
+      title="选择地区与主体"
       style="width: min(640px, 94vw)"
     >
       <div class="org-picker">
         <label>
-          <span>地区</span>
+          <span>地区（必选）</span>
           <n-select
             :value="orgPickerAreaId"
             :options="orgPickerAreaOptions"
@@ -861,18 +910,22 @@ onMounted(async () => {
           <n-input
             v-model:value="orgPickerKeyword"
             clearable
-            placeholder="主体名称（模糊搜索）"
+            placeholder="主体名称（模糊搜索，可留空不选）"
             @keyup.enter="handleSearchOrgs"
           />
           <n-button type="primary" :loading="searchingOrgs" @click="handleSearchOrgs">
             搜索
           </n-button>
         </div>
-        <n-text v-if="selectedOrgs.length" depth="3" class="selected-count">
-          已选 {{ selectedOrgs.length }} 个主体
+        <n-text depth="3" class="selected-count">
+          {{
+            selectedOrgs.length
+              ? `已选 ${selectedOrgs.length} 个主体`
+              : '未选主体时表示该地区全部主体'
+          }}
         </n-text>
         <div v-if="!orgHits.length" class="empty-inline">
-          <n-text depth="3">选择地区并搜索后，勾选一个或多个主体</n-text>
+          <n-text depth="3">选择地区后可搜索并勾选主体；也可不选主体直接确认</n-text>
         </div>
         <div v-else class="org-hit-list">
           <div
@@ -1054,6 +1107,11 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
+.sub-list {
+  display: grid;
+  gap: 0;
+}
+
 .sub-card {
   border: 1px solid var(--n-border-color, #e0e0e6);
   border-radius: 12px;
@@ -1062,10 +1120,23 @@ onMounted(async () => {
   display: grid;
   gap: 0;
   overflow: hidden;
+  background: var(--n-card-color, #fff);
 }
 
 .sub-card:last-child {
   margin-bottom: 0;
+}
+
+.sub-card-ghost {
+  opacity: 0.45;
+}
+
+.sub-card-chosen {
+  box-shadow: 0 0 0 1px rgba(24, 160, 88, 0.35);
+}
+
+.sub-card-drag {
+  opacity: 0.95;
 }
 
 .sub-card.is-collapsed .sub-card-head {
@@ -1093,6 +1164,28 @@ onMounted(async () => {
   min-width: 0;
   flex: 1;
   pointer-events: none;
+}
+
+.sub-drag-handle {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--n-text-color-3, #9ca3af);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.sub-drag-handle:active {
+  cursor: grabbing;
+}
+
+.sub-drag-handle:hover {
+  color: #18a058;
+  background: rgba(24, 160, 88, 0.1);
 }
 
 .sub-switch-wrap {
@@ -1149,6 +1242,39 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.bill-month-field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  grid-column: 1 / -1;
+}
+
+.bill-month-label {
+  font-size: 13px;
+}
+
+.bill-month-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.bill-month-kind {
+  width: 118px;
+  flex: 0 0 auto;
+}
+
+.bill-month-fixed {
+  width: 110px;
+  flex: 0 0 auto;
+}
+
+.bill-month-tilde {
+  color: var(--n-text-color-3, #9ca3af);
+  font-variant-numeric: tabular-nums;
 }
 
 .filter-block {

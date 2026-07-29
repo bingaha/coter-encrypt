@@ -212,7 +212,7 @@ fn cookie_header_has_token_inner(cookies: &str) -> bool {
 }
 
 /// 统一取 Cookie 头；缺失或格式无效返回明确中文错误。
-#[allow(dead_code)] // 供其他业务模块直接取 Cookie；订单订阅走 with_auth_retry
+#[allow(dead_code)] // 供其他业务模块直接取 Cookie；后道险种订单订阅走 with_auth_retry
 pub fn get_cookies() -> Result<String, String> {
     let config = load_yunsheng_auth_config()?;
     require_cookies(&config.cookies)

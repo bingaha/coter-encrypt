@@ -98,13 +98,59 @@ npm run tauri:build
 
 ```text
 target/release/CoterEncrypt.exe
-target/release/bundle/nsis/CoterEncrypt_0.1.18_x64-setup.exe
+target/release/bundle/nsis/CoterEncrypt_<version>_x64-setup.exe
 ```
 
 - `CoterEncrypt.exe`：便携/内测运行
 - NSIS 安装包：适合分发
 
 运行产物无需打开浏览器或访问 `localhost`。
+
+## 发布时如何改版本号
+
+发布前把下列位置的版本号改成同一新值（例如 `0.2.5`），再提交、打 tag、推送。
+
+### 桌面应用
+
+| 文件 | 字段 |
+|------|------|
+| `package.json` | `"version"` |
+| `frontend/package.json` | `"version"` |
+| `src-tauri/Cargo.toml` | `version = "..."` |
+| `src-tauri/tauri.conf.json` | `"version"` |
+
+改完 `Cargo.toml` 后，同步根目录 `Cargo.lock` 里包名 `coter-encrypt-desktop` 的 `version`（可直接改，或执行 `cargo check --manifest-path src-tauri/Cargo.toml`）。
+
+根目录与 `frontend/` 的 `package-lock.json` 顶部 `"version"` 与对应 `package.json` 保持一致（可直接改，或在对应目录执行 `npm install`）。
+
+### 浏览器插件（本次一并发布时）
+
+| 文件 | 字段 |
+|------|------|
+| `browser-extension/manifest.json` | `"version"` |
+
+### 由上述版本自动带出
+
+- 窗口标题：`加解密工具 v{version}`（Rust `CARGO_PKG_VERSION` + 前端 Tauri `getVersion()`）
+- 打包后的 `frontend/dist/index.html` 的 `<title>`：由 `frontend/vite.config.js` 读取 `frontend/package.json` 注入
+
+### 发布收尾
+
+```bash
+git add -A && git commit -m "发布 0.2.5：……"
+git tag -a v0.2.5 -m "发布 0.2.5：……"
+git push origin HEAD
+git push origin v0.2.5
+npm run tauri:build
+```
+
+构建产物示例：
+
+```text
+target/release/CoterEncrypt
+target/release/bundle/deb/CoterEncrypt_0.2.5_amd64.deb
+target/release/bundle/nsis/CoterEncrypt_0.2.5_x64-setup.exe
+```
 
 ## 使用说明
 
