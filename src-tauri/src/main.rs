@@ -463,6 +463,7 @@ fn main() {
         .manage(merge_monitor::create_state())
         .setup(|app| {
             apply_window_title_with_version(app.handle());
+            schedule_window_title_refresh(app.handle().clone());
             pipeline_monitor::spawn_background(app.handle().clone());
             merge_monitor::spawn_background(app.handle().clone());
             Ok(())
@@ -532,9 +533,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building CoterEncrypt")
         .run(|app_handle, event| {
-            // setup 与 Ready 各设一次，确保窗口就绪后标题带上包版本
             if let tauri::RunEvent::Ready = event {
                 apply_window_title_with_version(app_handle);
+                schedule_window_title_refresh(app_handle.clone());
             }
         });
 }
@@ -545,4 +546,13 @@ fn apply_window_title_with_version(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&title);
     }
+}
+
+fn schedule_window_title_refresh(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        for delay_ms in [100_u64, 300, 800, 1500, 3000] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            apply_window_title_with_version(&app);
+        }
+    });
 }

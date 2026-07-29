@@ -117,7 +117,7 @@ target/release/bundle/nsis/CoterEncrypt_<version>_x64-setup.exe
 | `package.json` | `"version"` |
 | `frontend/package.json` | `"version"` |
 | `src-tauri/Cargo.toml` | `version = "..."` |
-| `src-tauri/tauri.conf.json` | `"version"` |
+| `src-tauri/tauri.conf.json` | `"version"`，以及窗口 `"title"`（写成 `加解密工具 vX.Y.Z`） |
 
 改完 `Cargo.toml` 后，同步根目录 `Cargo.lock` 里包名 `coter-encrypt-desktop` 的 `version`（可直接改，或执行 `cargo check --manifest-path src-tauri/Cargo.toml`）。
 
@@ -131,7 +131,7 @@ target/release/bundle/nsis/CoterEncrypt_<version>_x64-setup.exe
 
 ### 由上述版本自动带出
 
-- 窗口标题：`加解密工具 v{version}`（Rust `CARGO_PKG_VERSION` + 前端 Tauri `getVersion()`）
+- 运行后窗口标题会再次同步为 `加解密工具 v{version}`（Rust 包版本 + 前端构建期版本 / Tauri `getVersion()`）
 - 打包后的 `frontend/dist/index.html` 的 `<title>`：由 `frontend/vite.config.js` 读取 `frontend/package.json` 注入
 
 ### 发布收尾

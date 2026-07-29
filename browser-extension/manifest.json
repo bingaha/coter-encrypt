@@ -1,7 +1,7 @@
 {
  "manifest_version": 3,
  "name": "Coter Cookie Bridge",
- "version": "0.2.5",
+ "version": "0.2.6",
  "description": "Bridge CoterEncrypt desktop cookie open requests to the browser.",
  "minimum_chrome_version": "116",
  "permissions": [

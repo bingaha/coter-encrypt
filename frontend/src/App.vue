@@ -29,6 +29,12 @@ provide('toggleTheme', toggleTheme)
 
 onMounted(() => {
   syncAppWindowTitle()
+  // 再补几次，盖过页面加载过程中的标题回写
+  ;[200, 800, 2000].forEach((ms) => {
+    setTimeout(() => {
+      syncAppWindowTitle()
+    }, ms)
+  })
 })
 </script>
 
