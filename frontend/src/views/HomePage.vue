@@ -19,6 +19,7 @@ import {
  ReceiptOutline,
  SearchOutline,
  ServerOutline,
+ SettingsOutline,
  SwapHorizontalOutline,
  GitNetworkOutline,
  GitMergeOutline,
@@ -29,6 +30,7 @@ import { useConfigStore } from '@/store'
 import { invokeApi } from '@/api/tauriClient'
 import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
 import { useHttpProxyConfig } from '@/composables/useHttpProxyConfig'
+import { useAppSettings } from '@/composables/useAppSettings'
 import { listen } from '@tauri-apps/api/event'
 import { getPipelineMonitorSnapshot } from '@/api/pipelineMonitor'
 import { getMergeMonitorSnapshot } from '@/api/mergeMonitor'
@@ -57,6 +59,8 @@ const {
  openModal: openProxyModal,
  loadConfig: loadProxyConfig
 } = useHttpProxyConfig()
+
+const { openSettings } = useAppSettings()
 
 const toolEntries = [
  {
@@ -329,6 +333,18 @@ onBeforeUnmount(() => {
  </n-tag>
  </template>
  待办总数
+ </n-tooltip>
+
+ <n-tooltip trigger="hover">
+ <template #trigger>
+ <n-button secondary size="small" @click="openSettings('database')">
+ <template #icon>
+ <n-icon><SettingsOutline /></n-icon>
+ </template>
+ 设置
+ </n-button>
+ </template>
+ 统一配置：数据库 / 网络代理 / 浏览器插件 / 云生
  </n-tooltip>
 
  <n-tooltip trigger="hover">

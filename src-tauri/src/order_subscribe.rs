@@ -30,27 +30,33 @@ pub fn default_order_states() -> Vec<i32> {
     vec![1, 2, 3, 7, 8]
 }
 
+/// 订阅内选中的主体（落盘 id + 名称，供回显）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgAccountRef {
+    pub org_account_id: i64,
+    #[serde(default)]
+    pub account_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Subscription {
     pub id: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub org_account_id: i64,
-    #[serde(default)]
-    pub account_name: String,
     pub area_id: i64,
     #[serde(default)]
     pub area_name: String,
+    /// 同一地区下的多个主体。
+    #[serde(default)]
+    pub org_accounts: Vec<OrgAccountRef>,
     /// `"current"` | `"fixed"`
     #[serde(default = "default_bill_month_mode")]
     pub bill_month_mode: String,
     /// fixed 时必填，YYYYMM
     #[serde(default)]
     pub bill_month: String,
-    /// 机构侧业务月份提示（来自 orgAccount 的 orderMonthGjj / orderMonthSb）；仅展示，不影响 `current` 解析。
-    #[serde(default)]
-    pub business_bill_month: String,
     #[serde(default)]
     pub order_states: Vec<i32>,
     #[serde(default)]
@@ -74,13 +80,11 @@ impl Subscription {
         Self {
             id: generate_subscription_id(),
             enabled: true,
-            org_account_id: 0,
-            account_name: String::new(),
             area_id: 0,
             area_name: String::new(),
+            org_accounts: Vec::new(),
             bill_month_mode: default_bill_month_mode(),
             bill_month: String::new(),
-            business_bill_month: String::new(),
             order_states: default_order_states(),
             biz_types: DISPLAY_BIZ_TYPES
                 .iter()
@@ -88,6 +92,14 @@ impl Subscription {
                 .collect(),
             ins_codes: Vec::new(),
         }
+    }
+
+    pub fn org_account_ids(&self) -> Vec<i64> {
+        self.org_accounts
+            .iter()
+            .map(|o| o.org_account_id)
+            .filter(|id| *id > 0)
+            .collect()
     }
 }
 
@@ -168,10 +180,10 @@ pub struct AreaBizBreakdown {
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionRunResult {
     pub subscription_id: String,
-    pub account_name: String,
-    pub org_account_id: i64,
     #[serde(default)]
-    pub config_area_name: String,
+    pub area_name: String,
+    #[serde(default)]
+    pub org_count: i64,
     pub bill_month: String,
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -306,10 +318,24 @@ pub fn normalize_subscription(sub: &mut Subscription) {
     if sub.id.is_empty() {
         sub.id = generate_subscription_id();
     }
-    sub.account_name = sub.account_name.trim().to_string();
     sub.area_name = sub.area_name.trim().to_string();
     sub.bill_month = sub.bill_month.trim().to_string();
-    sub.business_bill_month = sub.business_bill_month.trim().to_string();
+
+    let mut seen_org = std::collections::HashSet::new();
+    sub.org_accounts = sub
+        .org_accounts
+        .drain(..)
+        .filter_map(|mut org| {
+            if org.org_account_id <= 0 {
+                return None;
+            }
+            if !seen_org.insert(org.org_account_id) {
+                return None;
+            }
+            org.account_name = org.account_name.trim().to_string();
+            Some(org)
+        })
+        .collect();
 
     let mode = sub.bill_month_mode.trim().to_ascii_lowercase();
     sub.bill_month_mode = if mode == "fixed" {
@@ -335,16 +361,16 @@ pub fn normalize_subscription(sub: &mut Subscription) {
 
 fn validate_config(config: &OrderSubscribeConfig) -> Result<(), String> {
     for (idx, sub) in config.subscriptions.iter().enumerate() {
-        let label = if sub.account_name.is_empty() {
+        let label = if sub.area_name.is_empty() {
             format!("第 {} 条订阅", idx + 1)
         } else {
-            sub.account_name.clone()
+            sub.area_name.clone()
         };
-        if sub.org_account_id <= 0 {
-            return Err(format!("{label}：请选择机构"));
-        }
         if sub.area_id <= 0 {
             return Err(format!("{label}：请选择地区"));
+        }
+        if sub.org_accounts.is_empty() {
+            return Err(format!("{label}：请至少选择一个主体"));
         }
         if sub.bill_month_mode == "fixed" {
             if !is_valid_bill_month(&sub.bill_month) {
@@ -389,7 +415,7 @@ pub fn build_operate_order_body(sub: &Subscription, bill_month: &str) -> Value {
         "pageNo": 1,
         "pageSize": 100,
         "billMonth": bill_month,
-        "orgAccountIds": [sub.org_account_id],
+        "orgAccountIds": sub.org_account_ids(),
         "orderStates": sub.order_states,
         "insCodes": sub.ins_codes,
         "areaIds": [],
@@ -515,9 +541,8 @@ pub fn aggregate_subscription_success(
     let subscribed_total = sum_subscribed_counts(records, &sub.biz_types);
     SubscriptionRunResult {
         subscription_id: sub.id.clone(),
-        account_name: sub.account_name.clone(),
-        org_account_id: sub.org_account_id,
-        config_area_name: sub.area_name.clone(),
+        area_name: sub.area_name.clone(),
+        org_count: sub.org_accounts.len() as i64,
         bill_month: bill_month.to_string(),
         success: true,
         error: None,
@@ -533,9 +558,8 @@ pub fn aggregate_subscription_error(
 ) -> SubscriptionRunResult {
     SubscriptionRunResult {
         subscription_id: sub.id.clone(),
-        account_name: sub.account_name.clone(),
-        org_account_id: sub.org_account_id,
-        config_area_name: sub.area_name.clone(),
+        area_name: sub.area_name.clone(),
+        org_count: sub.org_accounts.len() as i64,
         bill_month: bill_month.to_string(),
         success: false,
         error: Some(error),
@@ -741,51 +765,48 @@ fn walk_areas(node: &Value, province_hint: &str, out: &mut Vec<AreaOption>) {
     }
 }
 
-async fn post_manage_api(path: &str, body: Value) -> Result<Value, String> {
-    let cookies = yunsheng_auth::get_cookies()?;
+async fn post_manage_api(
+    app: Option<&AppHandle>,
+    path: &str,
+    body: Value,
+) -> Result<Value, String> {
     let proxy = http_client::load_http_proxy_config().unwrap_or_default();
     let client = yunsheng_auth::build_yunsheng_http_client(&proxy)?;
     let url = format!("{MANAGE_API_BASE}{path}");
 
-    let builder = client.post(&url).json(&body);
-    let builder = yunsheng_auth::apply_auth_headers(builder, &cookies);
-
-    let response = builder
-        .send()
-        .await
-        .map_err(|e| format!("请求云生接口失败: {e}"))?;
-    let status = response.status().as_u16();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| format!("读取云生接口响应失败: {e}"))?;
-
-    let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
-
-    if let Some(err) = yunsheng_auth::map_auth_error(status, Some(&parsed)) {
-        return Err(err);
-    }
-    if !(200..300).contains(&status) {
-        let msg = parsed
-            .get("msg")
-            .or_else(|| parsed.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("请求失败");
-        return Err(format!("云生接口错误 ({status}): {msg}"));
-    }
-
-    // 业务层失败（含鉴权 30000、status:false、code!=0）不得当成成功空列表
-    yunsheng_auth::ensure_yunsheng_business_ok(&parsed)?;
-
-    Ok(parsed)
+    yunsheng_auth::with_auth_retry(app, |cookies| {
+        let client = client.clone();
+        let url = url.clone();
+        let body = body.clone();
+        async move {
+            let builder = client.post(&url).json(&body);
+            let builder = yunsheng_auth::apply_auth_headers(builder, &cookies);
+            let response = builder
+                .send()
+                .await
+                .map_err(|e| format!("请求云生接口失败: {e}"))?;
+            let status = response.status().as_u16();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| format!("读取云生接口响应失败: {e}"))?;
+            let parsed: Value =
+                serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+            Ok((status, parsed))
+        }
+    })
+    .await
 }
 
-pub async fn list_order_subscribe_areas() -> Result<Vec<AreaOption>, String> {
-    let body = post_manage_api("/areaSetting/selectList", json!({})).await?;
+pub async fn list_order_subscribe_areas(
+    app: &AppHandle,
+) -> Result<Vec<AreaOption>, String> {
+    let body = post_manage_api(Some(app), "/areaSetting/selectList", json!({})).await?;
     Ok(flatten_area_options(&body))
 }
 
 pub async fn search_order_subscribe_orgs(
+    app: &AppHandle,
     request: SearchOrgAccountsRequest,
 ) -> Result<Vec<OrgAccountHit>, String> {
     if request.area_id <= 0 {
@@ -802,6 +823,7 @@ pub async fn search_order_subscribe_orgs(
         request.page_size.min(100)
     };
     let body = post_manage_api(
+        Some(app),
         "/orgAccount/pageList",
         json!({
             "pageNo": page_no,
@@ -844,7 +866,7 @@ fn save_order_subscribe_result_to_disk(snapshot: &ExecutionSnapshot) -> Result<(
 }
 
 /// 手动「立即执行」：对所有启用订阅各查第 1 页并覆盖结果快照。
-pub async fn run_order_subscribe_now() -> Result<ExecutionSnapshot, String> {
+pub async fn run_order_subscribe_now(app: &AppHandle) -> Result<ExecutionSnapshot, String> {
     let config = load_order_subscribe_config()?;
     let now = chrono::Local::now();
     let today = now.date_naive();
@@ -859,7 +881,7 @@ pub async fn run_order_subscribe_now() -> Result<ExecutionSnapshot, String> {
         let body = build_operate_order_body(sub, &bill_month);
         responses.insert(
             sub.id.clone(),
-            post_manage_api("/operateOrder/pageList", body).await,
+            post_manage_api(Some(app), "/operateOrder/pageList", body).await,
         );
     }
 
@@ -911,7 +933,7 @@ pub async fn maybe_auto_run_order_subscribe(
             snapshot,
         });
     }
-    match run_order_subscribe_now().await {
+    match run_order_subscribe_now(app).await {
         Ok(snapshot) => {
             let failed = snapshot
                 .subscriptions
@@ -1105,16 +1127,19 @@ mod tests {
             auto_run_on_startup: false,
             subscriptions: vec![{
                 let mut s = Subscription::new_default();
-                s.org_account_id = 0;
+                s.org_accounts.clear();
                 s.area_id = 85;
-                s.account_name = "测试".into();
+                s.area_name = "济南市".into();
                 s
             }],
         };
         let err = validate_config(&config).expect_err("missing org");
-        assert!(err.contains("机构"));
+        assert!(err.contains("主体"));
 
-        config.subscriptions[0].org_account_id = 1;
+        config.subscriptions[0].org_accounts = vec![OrgAccountRef {
+            org_account_id: 1,
+            account_name: "测试".into(),
+        }];
         config.subscriptions[0].bill_month_mode = "fixed".into();
         config.subscriptions[0].bill_month = "2026".into();
         let err = validate_config(&config).expect_err("bad month");
@@ -1126,22 +1151,31 @@ mod tests {
         let sub = Subscription {
             id: "sub-1".into(),
             enabled: false,
-            org_account_id: 42,
-            account_name: "Acme".into(),
             area_id: 85,
             area_name: "济南市".into(),
+            org_accounts: vec![
+                OrgAccountRef {
+                    org_account_id: 42,
+                    account_name: "Acme".into(),
+                },
+                OrgAccountRef {
+                    org_account_id: 43,
+                    account_name: "Beta".into(),
+                },
+            ],
             bill_month_mode: "fixed".into(),
             bill_month: "202607".into(),
-            business_bill_month: "202608".into(),
             order_states: default_order_states(),
             biz_types: vec!["sbAdd".into(), "gjjStop".into()],
             ins_codes: vec![20, 30],
         };
         let value = serde_json::to_value(&sub).unwrap();
-        assert_eq!(value["orgAccountId"], 42);
+        assert_eq!(value["orgAccounts"][0]["orgAccountId"], 42);
         assert_eq!(value["billMonthMode"], "fixed");
         assert_eq!(value["orderStates"], json!([1, 2, 3, 7, 8]));
         assert!(value.get("keep").is_none());
+        assert!(value.get("orgAccountId").is_none());
+        assert!(value.get("businessBillMonth").is_none());
         let back: Subscription = serde_json::from_value(value).unwrap();
         assert_eq!(back, sub);
     }
@@ -1149,8 +1183,10 @@ mod tests {
     fn sample_sub(id: &str, org_id: i64, biz_types: &[&str]) -> Subscription {
         let mut s = Subscription::new_default();
         s.id = id.into();
-        s.org_account_id = org_id;
-        s.account_name = format!("主体{org_id}");
+        s.org_accounts = vec![OrgAccountRef {
+            org_account_id: org_id,
+            account_name: format!("主体{org_id}"),
+        }];
         s.area_id = 85;
         s.area_name = "济南市".into();
         s.biz_types = biz_types.iter().map(|t| (*t).to_string()).collect();
@@ -1204,16 +1240,6 @@ mod tests {
     fn resolve_bill_month_current_uses_injected_now() {
         let mut sub = sample_sub("a", 1, &[]);
         sub.bill_month_mode = "current".into();
-        sub.business_bill_month.clear();
-        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
-        assert_eq!(resolve_bill_month(&sub, now), "202607");
-    }
-
-    #[test]
-    fn resolve_bill_month_current_ignores_business_month() {
-        let mut sub = sample_sub("a", 1, &[]);
-        sub.bill_month_mode = "current".into();
-        sub.business_bill_month = "202608".into();
         let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
         assert_eq!(resolve_bill_month(&sub, now), "202607");
     }
@@ -1226,6 +1252,23 @@ mod tests {
         );
         assert_eq!(business_bill_month_from_org_months(0, 0), "");
         assert_eq!(business_bill_month_from_org_months(202613, 202607), "202607");
+    }
+
+    #[test]
+    fn build_operate_order_body_multi_org_ids() {
+        let mut sub = sample_sub("s1", 1, &["sbAdd"]);
+        sub.org_accounts = vec![
+            OrgAccountRef {
+                org_account_id: 11,
+                account_name: "甲".into(),
+            },
+            OrgAccountRef {
+                org_account_id: 22,
+                account_name: "乙".into(),
+            },
+        ];
+        let body = build_operate_order_body(&sub, "202607");
+        assert_eq!(body["orgAccountIds"], json!([11, 22]));
     }
 
     #[test]

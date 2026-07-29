@@ -161,6 +161,14 @@ async fn open_default_browser_with_cookies(
 }
 
 #[tauri::command]
+async fn open_browser_with_url_cookie_header(
+    app: tauri::AppHandle,
+    request: browser_bridge::OpenUrlWithCookieHeaderRequest,
+) -> Result<browser_bridge::OpenWithCookiesResponse, String> {
+    browser_bridge::open_browser_with_url_cookie_header(app, request).await
+}
+
+#[tauri::command]
 async fn transfer_oss_key(
     oss_key: String,
     direction: String,
@@ -371,6 +379,13 @@ fn save_yunsheng_auth_token(
 }
 
 #[tauri::command]
+async fn login_yunsheng(
+    app: tauri::AppHandle,
+) -> Result<yunsheng_auth::YunshengAuthConfig, String> {
+    yunsheng_auth::login_yunsheng(Some(&app), true).await
+}
+
+#[tauri::command]
 fn load_order_subscribe_config() -> Result<order_subscribe::OrderSubscribeConfig, String> {
     order_subscribe::load_order_subscribe_config()
 }
@@ -383,15 +398,18 @@ fn save_order_subscribe_config(
 }
 
 #[tauri::command]
-async fn list_order_subscribe_areas() -> Result<Vec<order_subscribe::AreaOption>, String> {
-    order_subscribe::list_order_subscribe_areas().await
+async fn list_order_subscribe_areas(
+    app: tauri::AppHandle,
+) -> Result<Vec<order_subscribe::AreaOption>, String> {
+    order_subscribe::list_order_subscribe_areas(&app).await
 }
 
 #[tauri::command]
 async fn search_order_subscribe_orgs(
+    app: tauri::AppHandle,
     request: order_subscribe::SearchOrgAccountsRequest,
 ) -> Result<Vec<order_subscribe::OrgAccountHit>, String> {
-    order_subscribe::search_order_subscribe_orgs(request).await
+    order_subscribe::search_order_subscribe_orgs(&app, request).await
 }
 
 #[tauri::command]
@@ -412,8 +430,10 @@ fn set_order_subscribe_auto_run(
 }
 
 #[tauri::command]
-async fn run_order_subscribe_now() -> Result<order_subscribe::ExecutionSnapshot, String> {
-    order_subscribe::run_order_subscribe_now().await
+async fn run_order_subscribe_now(
+    app: tauri::AppHandle,
+) -> Result<order_subscribe::ExecutionSnapshot, String> {
+    order_subscribe::run_order_subscribe_now(&app).await
 }
 
 #[tauri::command]
@@ -470,6 +490,7 @@ fn main() {
             save_website_url_mapping,
             open_app_config_dir,
             open_default_browser_with_cookies,
+            open_browser_with_url_cookie_header,
             transfer_oss_key,
             load_oss_transfer_history,
             delete_oss_transfer_record,
@@ -496,6 +517,7 @@ fn main() {
             list_merge_monitor_repositories,
             load_yunsheng_auth_token,
             save_yunsheng_auth_token,
+            login_yunsheng,
             load_order_subscribe_config,
             save_order_subscribe_config,
             list_order_subscribe_areas,

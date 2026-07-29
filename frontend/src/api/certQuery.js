@@ -39,3 +39,7 @@ export const saveWebsiteUrlMapping = (mapping) => {
 export const openDefaultBrowserWithCookies = (request) => {
  return invokeApi('open_default_browser_with_cookies', { request })
 }
+
+export const openBrowserWithUrlCookieHeader = (request) => {
+ return invokeApi('open_browser_with_url_cookie_header', { request })
+}

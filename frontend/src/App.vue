@@ -8,8 +8,7 @@ import {
  dateZhCN,
  darkTheme
 } from 'naive-ui'
-import MysqlDatasourceModal from '@/components/MysqlDatasourceModal.vue'
-import HttpProxyModal from '@/components/HttpProxyModal.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
 
 // 主题状态管理，从 localStorage 读取初始值
 const isDarkMode = ref(localStorage.getItem('theme') === 'dark')
@@ -38,8 +37,7 @@ provide('toggleTheme', toggleTheme)
  <component :is="Component" />
  </keep-alive>
  </router-view>
- <mysql-datasource-modal />
- <http-proxy-modal />
+            <settings-modal />
  </div>
  </n-dialog-provider>
  </n-message-provider>

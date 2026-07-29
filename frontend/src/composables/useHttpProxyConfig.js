@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { loadHttpProxyConfig, saveHttpProxyConfig } from '@/api/httpProxy'
+import { useAppSettings } from '@/composables/useAppSettings'
 
 const MODE_OPTIONS = [
   { value: 'direct', label: '直连', hint: '不使用任何代理' },
@@ -12,7 +13,6 @@ const defaultForm = () => ({
   url: ''
 })
 
-const modalVisible = ref(false)
 const form = ref(defaultForm())
 const loading = ref(false)
 const saving = ref(false)
@@ -78,17 +78,18 @@ const saveConfig = async () => {
 }
 
 const openModal = async () => {
-  modalVisible.value = true
+  const { openSettings } = useAppSettings()
+  openSettings('proxy')
   await loadConfig({ force: true })
 }
 
 const closeModal = () => {
-  modalVisible.value = false
+  const { closeSettings } = useAppSettings()
+  closeSettings()
 }
 
 export const useHttpProxyConfig = () => ({
   MODE_OPTIONS,
-  modalVisible,
   form,
   loading,
   saving,

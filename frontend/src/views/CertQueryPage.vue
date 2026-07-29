@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import {
  NButton,
  NEmpty,
@@ -29,10 +29,10 @@ import {
  loadWebsiteUrlMappings,
  openDefaultBrowserWithCookies,
  queryCertInfo,
- saveBrowserBridgeConfig,
  saveWebsiteUrlMapping
 } from '@/api/certQuery'
 import { useMysqlDatasourceConfig } from '@/composables/useMysqlDatasourceConfig'
+import { useAppSettings } from '@/composables/useAppSettings'
 
 const configStore = useConfigStore()
 const message = useMessage()
@@ -46,11 +46,11 @@ const {
  openModal,
  loadConfig
 } = useMysqlDatasourceConfig()
+const { openSettings, settingsVisible } = useAppSettings()
 const bridgeForm = ref({
  extensionId: ''
 })
 const hasSavedBridgeConfig = ref(false)
-const savingBridgeConfig = ref(false)
 const websiteUrlMappings = ref([])
 const loadingMappings = ref(false)
 const openingKey = ref('')
@@ -133,10 +133,6 @@ const mappingCountLabel = computed(() => {
  return `${websiteUrlMappings.value.length} 条映射`
 })
 
-const canSaveBridgeConfig = computed(() => {
- return /^[a-p]{32}$/.test(bridgeForm.value.extensionId.trim())
-})
-
 const canSaveMapping = computed(() => {
  return Boolean(
  mappingForm.value.areaId.trim() &&
@@ -155,6 +151,13 @@ const loadBridgeConfig = async () => {
  }
 }
 
+watch(settingsVisible, async (visible, wasVisible) => {
+ if (wasVisible && !visible) {
+ await loadConfig({ force: true })
+ await loadBridgeConfig()
+ }
+})
+
 const loadMappings = async () => {
  loadingMappings.value = true
  try {
@@ -164,27 +167,6 @@ const loadMappings = async () => {
  message.error(error?.message || '读取网站地址映射失败')
  } finally {
  loadingMappings.value = false
- }
-}
-
-const handleSaveBridgeConfig = async () => {
- if (!canSaveBridgeConfig.value) {
- message.warning('插件 ID 应为 32 位小写 a-p 字符')
- return
- }
-
- savingBridgeConfig.value = true
- try {
- const response = await saveBrowserBridgeConfig({
- extensionId: bridgeForm.value.extensionId.trim()
- })
- bridgeForm.value.extensionId = response.data?.extensionId || bridgeForm.value.extensionId.trim()
- hasSavedBridgeConfig.value = true
- message.success('浏览器插件配置已保存')
- } catch (error) {
- message.error(error?.message || '保存浏览器插件配置失败')
- } finally {
- savingBridgeConfig.value = false
  }
 }
 
@@ -486,7 +468,7 @@ onMounted(() => {
  <div class="panel-heading panel-heading-row">
  <div>
  <h2>数据库连接</h2>
- <n-text depth="3">与首页“数据库配置”共用同一份 MySQL 数据源</n-text>
+ <n-text depth="3">与统一设置共用同一份 MySQL 数据源</n-text>
  </div>
  <n-tag :type="statusTagType" size="small">
  {{ statusLabel }}
@@ -502,7 +484,7 @@ onMounted(() => {
  <template #icon>
  <n-icon><SaveOutline /></n-icon>
  </template>
- 打开数据库配置
+ 打开设置 · 数据库
  </n-button>
  </div>
  </section>
@@ -521,26 +503,16 @@ onMounted(() => {
  </n-tag>
  </div>
 
- <label class="field-block">
- <span>插件 ID</span>
- <n-input
- v-model:value="bridgeForm.extensionId"
- placeholder="Chrome/Edge 扩展页面中的 32 位插件 ID"
- clearable
- />
- </label>
-
  <div class="panel-actions">
  <n-button
  type="primary"
- :disabled="!canSaveBridgeConfig"
- :loading="savingBridgeConfig"
- @click="handleSaveBridgeConfig"
+ secondary
+ @click="openSettings('browser')"
  >
  <template #icon>
  <n-icon><SaveOutline /></n-icon>
  </template>
- 保存插件 ID
+ 打开设置 · 浏览器插件
  </n-button>
  </div>
  </section>

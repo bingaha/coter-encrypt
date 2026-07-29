@@ -1,5 +1,5 @@
 <script setup>
-import { computed, h, inject, onMounted, ref } from 'vue'
+import { computed, h, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NButton,
@@ -9,7 +9,6 @@ import {
   NIcon,
   NInput,
   NModal,
-  NRadio,
   NSelect,
   NSwitch,
   NTag,
@@ -32,7 +31,8 @@ import {
   ListOutline
 } from '@vicons/ionicons5'
 import { useConfigStore } from '@/store'
-import { loadYunshengAuthToken, saveYunshengAuthToken } from '@/api/yunshengAuth'
+import { loadYunshengAuthToken } from '@/api/yunshengAuth'
+import { useAppSettings } from '@/composables/useAppSettings'
 import {
   BIZ_TYPE_OPTIONS,
   createDefaultSubscription,
@@ -58,16 +58,27 @@ const toggleTheme = inject('toggleTheme', () => configStore.toggleTheme())
 
 const loading = ref(false)
 const saving = ref(false)
-const savingToken = ref(false)
 const searchingOrgs = ref(false)
 const loadingAreas = ref(false)
 const running = ref(false)
 const clearingResult = ref(false)
 
 const cookies = ref('')
-const tokenModalVisible = ref(false)
+const hasYunshengCookies = computed(() => Boolean(String(cookies.value || '').trim()))
+const { openSettings, settingsVisible } = useAppSettings()
 /** 启动软件时是否自动查询当日待办（默认关） */
 const autoRunOnStartup = ref(false)
+
+watch(settingsVisible, async (visible, wasVisible) => {
+  if (wasVisible && !visible) {
+    try {
+      const { data } = await loadYunshengAuthToken()
+      cookies.value = data?.cookies || ''
+    } catch {
+      /* keep */
+    }
+  }
+})
 
 const subscriptions = ref([])
 const areas = ref([])
@@ -87,7 +98,8 @@ const orgPickerIndex = ref(-1)
 const orgPickerAreaId = ref(null)
 const orgPickerKeyword = ref('')
 const orgHits = ref([])
-const selectedOrgId = ref(null)
+/** 选择器内已勾选主体：{ orgAccountId, accountName }[] */
+const selectedOrgs = ref([])
 /** 展开的订阅 id；默认折叠，保证列表一行一条 */
 const expandedSubIds = ref(new Set())
 
@@ -138,13 +150,13 @@ const renderBizCount = (row, bizType) => {
 const resultTableRows = computed(() => {
   const rows = []
   for (const item of snapshot.value.subscriptions || []) {
+    const fallbackArea = item.areaName || item.configAreaName || '—'
     if (!item.success) {
       rows.push({
         key: `${item.subscriptionId}-err`,
-        accountName: item.accountName || item.subscriptionId || '—',
         success: false,
         billMonth: item.billMonth || '—',
-        areaName: item.configAreaName || '—',
+        areaName: fallbackArea,
         pending: 0,
         error: item.error || '查询失败',
         counts: Object.fromEntries(
@@ -157,10 +169,9 @@ const resultTableRows = computed(() => {
     if (!areas.length) {
       rows.push({
         key: `${item.subscriptionId}-empty`,
-        accountName: item.accountName || item.subscriptionId || '—',
         success: true,
         billMonth: item.billMonth || '—',
-        areaName: '—',
+        areaName: fallbackArea,
         pending: Number(item.subscribedTotal) || 0,
         error: '',
         counts: Object.fromEntries(
@@ -179,7 +190,6 @@ const resultTableRows = computed(() => {
         counts[bizType] = { count, highlighted }
         if (highlighted) pending += count
       }
-      // 保证六列都有值，避免缺字段时不高亮
       for (const opt of BIZ_TYPE_OPTIONS) {
         if (!counts[opt.value]) {
           counts[opt.value] = { count: 0, highlighted: false }
@@ -187,10 +197,9 @@ const resultTableRows = computed(() => {
       }
       rows.push({
         key: `${item.subscriptionId}-${area.areaName}`,
-        accountName: item.accountName || item.subscriptionId || '—',
         success: true,
         billMonth: item.billMonth || '—',
-        areaName: area.areaName || '—',
+        areaName: area.areaName || fallbackArea,
         pending,
         error: '',
         counts
@@ -210,10 +219,10 @@ const resultTableColumns = computed(() => {
   }))
   return [
     {
-      title: '机构',
-      key: 'accountName',
+      title: '地区',
+      key: 'areaName',
       ellipsis: { tooltip: true },
-      minWidth: 180
+      minWidth: 120
     },
     {
       title: '状态',
@@ -236,12 +245,6 @@ const resultTableColumns = computed(() => {
       key: 'billMonth',
       width: 88
     },
-    {
-      title: '地区',
-      key: 'areaName',
-      width: 100,
-      ellipsis: { tooltip: true }
-    },
     ...bizCols,
     {
       title: '待办',
@@ -263,10 +266,17 @@ const resultTableColumns = computed(() => {
   ]
 })
 
+const orgCountOf = (sub) => (Array.isArray(sub?.orgAccounts) ? sub.orgAccounts.length : 0)
+
 const orgDisplayText = (sub) => {
-  if (!sub?.accountName) return ''
-  return sub.areaName ? `${sub.accountName} · ${sub.areaName}` : sub.accountName
+  const n = orgCountOf(sub)
+  if (!sub?.areaName && !n) return ''
+  if (!n) return sub.areaName || ''
+  return `${sub.areaName || '未选地区'} · ${n} 个主体`
 }
+
+const isOrgSelected = (id) =>
+  selectedOrgs.value.some((item) => item.orgAccountId === id)
 
 const areaSelectOptions = computed(() =>
   (areas.value || []).map((item) => ({
@@ -323,7 +333,12 @@ const loadAll = async () => {
     subscriptions.value = (configRes.data?.subscriptions || []).map((item) => ({
       ...createDefaultSubscription(),
       ...item,
-      businessBillMonth: item.businessBillMonth || '',
+      orgAccounts: Array.isArray(item.orgAccounts)
+        ? item.orgAccounts.map((org) => ({
+            orgAccountId: Number(org.orgAccountId) || 0,
+            accountName: String(org.accountName || '').trim()
+          }))
+        : [],
       orderStates: Array.isArray(item.orderStates) ? [...item.orderStates] : [],
       bizTypes: Array.isArray(item.bizTypes) ? [...item.bizTypes] : [],
       insCodes: Array.isArray(item.insCodes) ? [...item.insCodes] : []
@@ -397,30 +412,14 @@ const handleAutoRunToggle = async (value) => {
   }
 }
 
-const openTokenModal = async () => {
+const openYunshengSettings = async () => {
   try {
     const { data } = await loadYunshengAuthToken()
     cookies.value = data?.cookies || ''
   } catch {
     /* keep current */
   }
-  tokenModalVisible.value = true
-}
-
-const handleSaveToken = async () => {
-  savingToken.value = true
-  try {
-    const { data } = await saveYunshengAuthToken({
-      cookies: String(cookies.value || '').trim()
-    })
-    cookies.value = data?.cookies || ''
-    message.success('Cookie 已保存')
-    tokenModalVisible.value = false
-  } catch (error) {
-    message.error(error?.message || '保存 Cookie 失败')
-  } finally {
-    savingToken.value = false
-  }
+  openSettings('yunsheng')
 }
 
 const addSubscription = () => {
@@ -441,16 +440,31 @@ const openOrgPicker = (index) => {
   orgPickerAreaId.value = sub?.areaId > 0 ? sub.areaId : null
   orgPickerKeyword.value = ''
   orgHits.value = []
-  selectedOrgId.value = sub?.orgAccountId > 0 ? sub.orgAccountId : null
+  selectedOrgs.value = Array.isArray(sub?.orgAccounts)
+    ? sub.orgAccounts
+        .filter((org) => Number(org.orgAccountId) > 0)
+        .map((org) => ({
+          orgAccountId: Number(org.orgAccountId),
+          accountName: String(org.accountName || '').trim()
+        }))
+    : []
   orgPickerVisible.value = true
   if (!areas.value.length) {
     loadAreas()
   }
 }
 
+const onOrgPickerAreaChange = (value) => {
+  orgPickerAreaId.value = value
+  selectedOrgs.value = []
+  orgHits.value = []
+  orgPickerKeyword.value = ''
+}
+
 const handleSearchOrgs = async () => {
+  // 未选地区：不调接口，表现得像搜不到
   if (!orgPickerAreaId.value) {
-    message.warning('请先选择地区')
+    orgHits.value = []
     return
   }
   searchingOrgs.value = true
@@ -472,31 +486,44 @@ const handleSearchOrgs = async () => {
   }
 }
 
+const toggleOrgHit = (hit) => {
+  const id = Number(hit?.orgAccountId) || 0
+  if (!id) return
+  const index = selectedOrgs.value.findIndex((item) => item.orgAccountId === id)
+  if (index >= 0) {
+    selectedOrgs.value.splice(index, 1)
+    return
+  }
+  selectedOrgs.value.push({
+    orgAccountId: id,
+    accountName: String(hit?.accountName || '').trim()
+  })
+}
+
 const applyOrgPicker = () => {
   const index = orgPickerIndex.value
   if (index < 0 || index >= subscriptions.value.length) {
     orgPickerVisible.value = false
     return
   }
-  const selectedId = selectedOrgId.value
-  if (!selectedId) {
-    message.warning('请选择一个机构')
+  if (!orgPickerAreaId.value) {
+    message.warning('请先选择地区')
     return
   }
-  const hit = orgHits.value.find((item) => item.orgAccountId === selectedId)
+  if (!selectedOrgs.value.length) {
+    message.warning('请至少选择一个主体')
+    return
+  }
   const areaId = orgPickerAreaId.value
   const sub = subscriptions.value[index]
-  sub.orgAccountId = selectedId
-  sub.accountName = hit?.accountName || sub.accountName
   sub.areaId = areaId
   sub.areaName = areaNameOf(areaId) || sub.areaName
-  sub.businessBillMonth = String(hit?.businessBillMonth || '').trim()
+  sub.orgAccounts = selectedOrgs.value.map((org) => ({
+    orgAccountId: Number(org.orgAccountId) || 0,
+    accountName: String(org.accountName || '').trim()
+  }))
   orgPickerVisible.value = false
-  message.success('已选择机构')
-}
-
-const selectOrgHit = (id) => {
-  selectedOrgId.value = id
+  message.success(`已选择 ${sub.orgAccounts.length} 个主体`)
 }
 
 const buildConfigPayload = () => ({
@@ -504,13 +531,16 @@ const buildConfigPayload = () => ({
   subscriptions: subscriptions.value.map((item) => ({
     id: String(item.id || '').trim(),
     enabled: !!item.enabled,
-    orgAccountId: Number(item.orgAccountId) || 0,
-    accountName: String(item.accountName || '').trim(),
     areaId: Number(item.areaId) || 0,
     areaName: String(item.areaName || '').trim(),
+    orgAccounts: Array.isArray(item.orgAccounts)
+      ? item.orgAccounts.map((org) => ({
+          orgAccountId: Number(org.orgAccountId) || 0,
+          accountName: String(org.accountName || '').trim()
+        }))
+      : [],
     billMonthMode: item.billMonthMode === 'fixed' ? 'fixed' : 'current',
     billMonth: String(item.billMonth || '').trim(),
-    businessBillMonth: String(item.businessBillMonth || '').trim(),
     orderStates: Array.isArray(item.orderStates) ? item.orderStates.map(Number) : [],
     bizTypes: Array.isArray(item.bizTypes) ? [...item.bizTypes] : [],
     insCodes: Array.isArray(item.insCodes) ? item.insCodes.map(Number) : []
@@ -524,9 +554,10 @@ const handleSave = async () => {
     autoRunOnStartup.value = !!data?.autoRunOnStartup
     subscriptions.value = (data?.subscriptions || []).map((item) => ({
       ...createDefaultSubscription(),
-      ...item
+      ...item,
+      orgAccounts: Array.isArray(item.orgAccounts) ? [...item.orgAccounts] : []
     }))
-    message.success('订阅配置已保存')
+    message.success('所有订阅已保存')
   } catch (error) {
     message.error(error?.message || '保存失败')
   } finally {
@@ -559,11 +590,27 @@ onMounted(async () => {
         </div>
       </div>
       <div class="right">
-        <n-button secondary @click="openTokenModal">
+        <label class="auto-run-switch header-auto-run" @click.stop>
+          <n-switch
+            :value="autoRunOnStartup"
+            size="small"
+            @update:value="handleAutoRunToggle"
+          />
+          <span>启动时自动查询</span>
+        </label>
+        <n-button secondary @click="openYunshengSettings">
           <template #icon>
             <n-icon><KeyOutline /></n-icon>
           </template>
-          Cookie
+          云生
+          <n-tag
+            class="cookie-status-tag"
+            :type="hasYunshengCookies ? 'success' : 'warning'"
+            size="small"
+            :bordered="false"
+          >
+            {{ hasYunshengCookies ? '已配置' : '未配置' }}
+          </n-tag>
         </n-button>
         <n-button type="primary" :loading="running" :disabled="loading" @click="handleRunNow">
           <template #icon>
@@ -581,12 +628,6 @@ onMounted(async () => {
             <n-icon><TrashOutline /></n-icon>
           </template>
           删除结果
-        </n-button>
-        <n-button secondary :loading="saving" @click="handleSave">
-          <template #icon>
-            <n-icon><SaveOutline /></n-icon>
-          </template>
-          保存配置
         </n-button>
         <n-button quaternary circle @click="handleToggleTheme">
           <template #icon>
@@ -608,9 +649,9 @@ onMounted(async () => {
               <template v-if="hasSnapshot">
                 上次执行 {{ snapshot.executedAt || '—' }} · 待办总数
                 <span class="total-num">{{ snapshot.total }}</span>
-                （绿色=已订阅且有待办，黑色=已订阅为 0，灰色=未订阅）
+                （绿色=已订阅且有待办，黑色=已订阅为 0，灰色=未订阅；每订阅仅统计前 100 条订单）
               </template>
-              <template v-else>尚未执行；配置保存后点击「立即执行」</template>
+              <template v-else>尚未执行；保存订阅后点击「立即执行」</template>
             </n-text>
           </div>
         </div>
@@ -628,7 +669,7 @@ onMounted(async () => {
           :columns="resultTableColumns"
           :data="resultTableRows"
           :row-key="(row) => row.key"
-          :scroll-x="1100"
+          :scroll-x="980"
           :max-height="360"
         />
       </section>
@@ -638,18 +679,16 @@ onMounted(async () => {
           <div class="panel-title-copy">
             <strong>订阅列表</strong>
             <n-text depth="3" class="panel-hint">
-              默认折叠为一行；展开后可改机构与过滤条件。停用订阅不参与执行。
+              默认折叠为一行；展开后可改地区主体、筛选条件与订阅业务。停用订阅不参与执行。
             </n-text>
           </div>
           <div class="panel-title-actions">
-            <label class="auto-run-switch" @click.stop>
-              <n-switch
-                :value="autoRunOnStartup"
-                size="small"
-                @update:value="handleAutoRunToggle"
-              />
-              <span>启动时自动查询</span>
-            </label>
+            <n-button size="small" secondary :loading="saving" :disabled="loading" @click="handleSave">
+              <template #icon>
+                <n-icon><SaveOutline /></n-icon>
+              </template>
+              保存所有订阅
+            </n-button>
             <n-button size="small" secondary :disabled="loading" @click="addSubscription">
               <template #icon>
                 <n-icon><AddOutline /></n-icon>
@@ -681,8 +720,8 @@ onMounted(async () => {
               <span class="sub-switch-wrap" @click.stop>
                 <n-switch v-model:value="sub.enabled" size="small" />
               </span>
-              <strong class="sub-name">{{ sub.accountName || `订阅 ${index + 1}` }}</strong>
-              <n-tag v-if="sub.areaName" size="small" :bordered="false">{{ sub.areaName }}</n-tag>
+              <strong class="sub-name">{{ sub.areaName || `订阅 ${index + 1}` }}</strong>
+              <n-tag size="small" :bordered="false">{{ orgCountOf(sub) }} 个主体</n-tag>
               <n-tag size="small" :bordered="false">{{ billMonthSummary(sub) }}</n-tag>
               <n-tag v-if="!sub.enabled" size="small" type="warning" :bordered="false">已禁用</n-tag>
             </div>
@@ -711,13 +750,13 @@ onMounted(async () => {
           <div v-if="isSubExpanded(sub.id)" class="sub-card-body" @click.stop>
             <div class="form-grid">
               <label>
-                <span>地区 / 机构</span>
+                <span>地区 / 主体</span>
                 <div class="org-row">
                   <n-input
                     class="org-picker-input"
                     :value="orgDisplayText(sub)"
                     readonly
-                    placeholder="点击选择地区与机构"
+                    placeholder="点击选择地区与多个主体"
                     @click="openOrgPicker(index)"
                   />
                   <n-button secondary @click="openOrgPicker(index)">
@@ -741,8 +780,20 @@ onMounted(async () => {
               </label>
             </div>
 
+            <div v-if="orgCountOf(sub)" class="selected-orgs">
+              <n-text depth="3">已选主体：</n-text>
+              <n-tag
+                v-for="org in sub.orgAccounts"
+                :key="org.orgAccountId"
+                size="small"
+                :bordered="false"
+              >
+                {{ org.accountName || `ID ${org.orgAccountId}` }}
+              </n-tag>
+            </div>
+
             <div class="filter-block">
-              <div class="filter-title">订单状态（空=不限）</div>
+              <div class="filter-title">筛选条件 · 订单状态（空=不限）</div>
               <n-checkbox-group v-model:value="sub.orderStates">
                 <div class="check-grid">
                   <n-checkbox
@@ -756,11 +807,11 @@ onMounted(async () => {
             </div>
 
             <div class="filter-block">
-              <div class="filter-title">业务类型（不含在缴）</div>
-              <n-checkbox-group v-model:value="sub.bizTypes">
-                <div class="check-grid">
+              <div class="filter-title">筛选条件 · 险种过滤（空=不限）</div>
+              <n-checkbox-group v-model:value="sub.insCodes">
+                <div class="check-grid dense">
                   <n-checkbox
-                    v-for="opt in BIZ_TYPE_OPTIONS"
+                    v-for="opt in INS_CODE_OPTIONS"
                     :key="opt.value"
                     :value="opt.value"
                     :label="opt.label"
@@ -770,11 +821,11 @@ onMounted(async () => {
             </div>
 
             <div class="filter-block">
-              <div class="filter-title">险种过滤（空=不限）</div>
-              <n-checkbox-group v-model:value="sub.insCodes">
-                <div class="check-grid dense">
+              <div class="filter-title">订阅业务 · 业务类型（勾选计入待办，不含在缴）</div>
+              <n-checkbox-group v-model:value="sub.bizTypes">
+                <div class="check-grid">
                   <n-checkbox
-                    v-for="opt in INS_CODE_OPTIONS"
+                    v-for="opt in BIZ_TYPE_OPTIONS"
                     :key="opt.value"
                     :value="opt.value"
                     :label="opt.label"
@@ -788,82 +839,59 @@ onMounted(async () => {
     </div>
 
     <n-modal
-      v-model:show="tokenModalVisible"
-      preset="card"
-      title="云生 Cookie"
-      style="width: min(560px, 92vw)"
-    >
-      <n-text depth="3" class="modal-hint">
-        从浏览器复制完整 Cookie 并粘贴，须包含 token_inner=...
-      </n-text>
-      <n-input
-        v-model:value="cookies"
-        type="textarea"
-        :autosize="{ minRows: 4, maxRows: 10 }"
-        placeholder="token_inner=eyJ..."
-        class="token-input"
-      />
-      <template #footer>
-        <div class="modal-actions">
-          <n-button @click="tokenModalVisible = false">取消</n-button>
-          <n-button type="primary" :loading="savingToken" @click="handleSaveToken">
-            保存 Cookie
-          </n-button>
-        </div>
-      </template>
-    </n-modal>
-
-    <n-modal
       v-model:show="orgPickerVisible"
       preset="card"
-      title="选择机构"
+      title="选择主体"
       style="width: min(640px, 94vw)"
     >
       <div class="org-picker">
         <label>
           <span>地区</span>
           <n-select
-            v-model:value="orgPickerAreaId"
+            :value="orgPickerAreaId"
             :options="orgPickerAreaOptions"
             :loading="loadingAreas"
             filterable
             clearable
             placeholder="选择地区"
+            @update:value="onOrgPickerAreaChange"
           />
         </label>
         <div class="org-search-row">
           <n-input
             v-model:value="orgPickerKeyword"
             clearable
-            placeholder="机构名称（模糊搜索）"
+            placeholder="主体名称（模糊搜索）"
             @keyup.enter="handleSearchOrgs"
           />
           <n-button type="primary" :loading="searchingOrgs" @click="handleSearchOrgs">
             搜索
           </n-button>
         </div>
+        <n-text v-if="selectedOrgs.length" depth="3" class="selected-count">
+          已选 {{ selectedOrgs.length }} 个主体
+        </n-text>
         <div v-if="!orgHits.length" class="empty-inline">
-          <n-text depth="3">选择地区并搜索后，点击一行选择目标机构</n-text>
+          <n-text depth="3">选择地区并搜索后，勾选一个或多个主体</n-text>
         </div>
         <div v-else class="org-hit-list">
           <div
             v-for="hit in orgHits"
             :key="hit.orgAccountId"
             class="org-hit-item"
-            :class="{ 'is-selected': selectedOrgId === hit.orgAccountId }"
+            :class="{ 'is-selected': isOrgSelected(hit.orgAccountId) }"
             role="button"
             tabindex="0"
-            @click="selectOrgHit(hit.orgAccountId)"
-            @keydown.enter.prevent="selectOrgHit(hit.orgAccountId)"
+            @click="toggleOrgHit(hit)"
+            @keydown.enter.prevent="toggleOrgHit(hit)"
           >
-            <n-radio
-              :checked="selectedOrgId === hit.orgAccountId"
-              :value="hit.orgAccountId"
+            <n-checkbox
+              :checked="isOrgSelected(hit.orgAccountId)"
               @click.stop
-              @update:checked="(checked) => checked && selectOrgHit(hit.orgAccountId)"
+              @update:checked="() => toggleOrgHit(hit)"
             />
             <div class="org-hit-copy">
-              <strong>{{ hit.accountName || '未命名机构' }}</strong>
+              <strong>{{ hit.accountName || '未命名主体' }}</strong>
               <n-text depth="3">
                 ID {{ hit.orgAccountId }}
                 <template v-if="hit.orderMonthGjj || hit.orderMonthSb">
@@ -916,6 +944,10 @@ onMounted(async () => {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.cookie-status-tag {
+  margin-left: 6px;
 }
 
 .title-mark {
@@ -980,6 +1012,23 @@ onMounted(async () => {
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+}
+
+.header-auto-run {
+  margin-right: 4px;
+  color: var(--n-text-color-2, #555);
+}
+
+.selected-orgs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.selected-count {
+  font-size: 12px;
 }
 
 .panel-hint {

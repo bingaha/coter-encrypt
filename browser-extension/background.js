@@ -1,9 +1,17 @@
 function cookieUrl(targetUrl, cookie) {
+ if (cookie?.url && String(cookie.url).startsWith('http')) {
+ return String(cookie.url)
+ }
+
  const target = new URL(targetUrl)
  const path = cookie.path || '/'
  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+ // chrome.cookies.set 要求 url 的 host 与 domain 一致；有 domain 时按 domain 构造 url
+ const host = cookie.domain
+ ? String(cookie.domain).trim().replace(/^\./, '')
+ : target.host
 
- return `${cookie.secure ? 'https:' : target.protocol}//${target.host}${normalizedPath}`
+ return `${cookie.secure ? 'https:' : target.protocol}//${host}${normalizedPath}`
 }
 
 function normalizeHostname(hostname) {
@@ -144,17 +152,18 @@ async function setCookie(targetUrl, cookie) {
  throw new Error('Cookie 缺少 name 或 value')
  }
 
+ const url = cookieUrl(targetUrl, cookie)
  const details = {
- url: cookieUrl(targetUrl, cookie),
+ url,
  name: String(cookie.name),
  value: String(cookie.value),
  path: cookie.path || '/',
- secure: Boolean(cookie.secure),
+ secure: cookie.secure !== false,
  httpOnly: Boolean(cookie.httpOnly)
  }
 
  if (cookie.domain) {
- details.domain = String(cookie.domain)
+ details.domain = String(cookie.domain).trim().replace(/^\./, '')
  }
 
  if (cookie.expirationDate !== undefined && cookie.expirationDate !== null) {
@@ -165,7 +174,20 @@ async function setCookie(targetUrl, cookie) {
  details.sameSite = cookie.sameSite
  }
 
- return chrome.cookies.set(details)
+ return new Promise((resolve, reject) => {
+ chrome.cookies.set(details, (result) => {
+ const runtimeError = chrome.runtime.lastError
+ if (runtimeError) {
+ reject(new Error(`${runtimeError.message} (url=${url}, domain=${details.domain || ''})`))
+ return
+ }
+ if (!result) {
+ reject(new Error(`cookies.set 返回空 (url=${url}, domain=${details.domain || ''})`))
+ return
+ }
+ resolve(result)
+ })
+ })
 }
 
 function waitForTabLoad(tabId) {
@@ -230,13 +252,22 @@ async function writeCookiesAndOpen(payload, sender) {
  let written = 0
  let cleared = 0
 
- // 1. 清除并写入 Cookie
+ // 1. 先清目标站，再清各 Cookie 声明的写入域（如 gateway.yunsheng.cn）
+ const clearUrls = new Set([targetUrl])
+ for (const cookie of cookies) {
+ const setUrl = cookieUrl(targetUrl, cookie)
+ if (setUrl) {
+ clearUrls.add(setUrl)
+ }
+ }
+ for (const clearUrl of clearUrls) {
  try {
- const clearResult = await clearCookiesForTarget(targetUrl)
- cleared = clearResult.cleared
+ const clearResult = await clearCookiesForTarget(clearUrl)
+ cleared += clearResult.cleared
  errors.push(...clearResult.errors.map((message) => `清理 Cookie 失败: ${message}`))
  } catch (error) {
  errors.push(`清理 Cookie 失败: ${error?.message || String(error)}`)
+ }
  }
 
  for (const cookie of cookies) {

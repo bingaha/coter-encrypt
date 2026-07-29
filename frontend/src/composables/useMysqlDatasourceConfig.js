@@ -4,6 +4,7 @@ import {
  saveMysqlDatasourceConfig,
  testMysqlDatasource
 } from '@/api/certQuery'
+import { useAppSettings } from '@/composables/useAppSettings'
 
 const defaultForm = () => ({
  host: '',
@@ -14,7 +15,6 @@ const defaultForm = () => ({
  connectTimeoutSeconds: 8
 })
 
-const modalVisible = ref(false)
 const datasourceForm = ref(defaultForm())
 const hasSavedDatasource = ref(false)
 const hasSavedPassword = ref(false)
@@ -184,25 +184,28 @@ const saveConfig = async () => {
 }
 
 const openModal = async () => {
- modalVisible.value = true
+ const { openSettings } = useAppSettings()
+ openSettings('database')
  await loadConfig()
 }
 
 const closeModal = () => {
- modalVisible.value = false
+ const { closeSettings } = useAppSettings()
+ closeSettings()
 }
 
 const ensureReady = async () => {
  const loaded = await loadConfig()
+ const { openSettings } = useAppSettings()
 
  if (!loaded) {
- modalVisible.value = true
+ openSettings('database')
  return false
  }
 
  const connected = await checkConnection()
  if (!connected) {
- modalVisible.value = true
+ openSettings('database')
  }
 
  return connected
@@ -213,7 +216,6 @@ const resetLoadedState = () => {
 }
 
 export const useMysqlDatasourceConfig = () => ({
- modalVisible,
  datasourceForm,
  hasSavedDatasource,
  hasSavedPassword,

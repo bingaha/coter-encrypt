@@ -73,13 +73,11 @@ export const INS_CODE_OPTIONS = [
 export const createDefaultSubscription = () => ({
   id: `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
   enabled: true,
-  orgAccountId: 0,
-  accountName: '',
   areaId: 0,
   areaName: '',
+  orgAccounts: [],
   billMonthMode: 'current',
   billMonth: '',
-  businessBillMonth: '',
   orderStates: [...DEFAULT_ORDER_STATES],
   bizTypes: BIZ_TYPE_OPTIONS.map((item) => item.value),
   insCodes: []

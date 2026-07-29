@@ -72,6 +72,14 @@ pub struct OpenWithCookiesRequest {
  pub cert_info: String,
 }
 
+/// 直接指定目标 URL + Cookie 请求头字符串（供云生设置等场景，不走 area_id 映射）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenUrlWithCookieHeaderRequest {
+ pub target_url: String,
+ pub cookie_header: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenWithCookiesResponse {
@@ -96,6 +104,9 @@ struct BridgePayload {
 struct BridgeCookie {
  #[serde(default, skip_serializing_if = "Option::is_none")]
  domain: Option<String>,
+ /// chrome.cookies.set 的 url；须与 domain 同站。token_inner 固定为 gateway。
+ #[serde(default, skip_serializing_if = "Option::is_none")]
+ url: Option<String>,
  #[serde(default, skip_serializing_if = "Option::is_none")]
  expiration_date: Option<f64>,
  #[serde(default)]
@@ -211,9 +222,6 @@ pub async fn open_default_browser_with_cookies(
  app: tauri::AppHandle,
  request: OpenWithCookiesRequest,
 ) -> Result<OpenWithCookiesResponse, String> {
- let config = load_browser_bridge_config()?;
- validate_extension_id(&config.extension_id)?;
-
  let mapping = find_mapping(&request.area_id, &request.business_type)?;
  let target_url = mapping.url.clone();
  let cookies = extract_cookies(&request.cert_info)?;
@@ -225,6 +233,41 @@ pub async fn open_default_browser_with_cookies(
  if cookies.is_empty() && storage_items.is_empty() {
  return Err("cert_info 中未找到 cookies 或存储规则".to_string());
  }
+
+ open_browser_bridge(app, target_url, cookies, storage_items).await
+}
+
+/// 用 Cookie 请求头字符串桥接打开指定 URL（不依赖 area_id 网站映射）。
+pub async fn open_browser_with_url_cookie_header(
+ app: tauri::AppHandle,
+ request: OpenUrlWithCookieHeaderRequest,
+) -> Result<OpenWithCookiesResponse, String> {
+ let target_url = request.target_url.trim().to_string();
+ if target_url.is_empty() {
+ return Err("目标 URL 不能为空".to_string());
+ }
+ let parsed = Url::parse(&target_url)
+ .map_err(|error| format!("目标 URL 不合法: {error}"))?;
+ if !matches!(parsed.scheme(), "http" | "https") {
+ return Err("目标 URL 只支持 http/https".to_string());
+ }
+
+ let cookies = cookies_from_header(&request.cookie_header, &target_url)?;
+ if cookies.is_empty() {
+ return Err("Cookie 为空或无法解析，请先配置完整 Cookie".to_string());
+ }
+
+ open_browser_bridge(app, target_url, cookies, Vec::new()).await
+}
+
+async fn open_browser_bridge(
+ app: tauri::AppHandle,
+ target_url: String,
+ cookies: Vec<BridgeCookie>,
+ storage_items: Vec<StorageItem>,
+) -> Result<OpenWithCookiesResponse, String> {
+ let config = load_browser_bridge_config()?;
+ validate_extension_id(&config.extension_id)?;
 
  let request_id = random_token(18);
  let token = random_token(32);
@@ -587,6 +630,57 @@ fn extract_cookies(cert_info: &str) -> Result<Vec<BridgeCookie>, String> {
  Ok(cookies)
 }
 
+/// 将完整 Cookie 请求头拆成 name/value。
+/// `token_inner` 写入 `https://gateway.yunsheng.cn/`（Domain=gateway.yunsheng.cn）；其余跟目标站。
+fn cookies_from_header(cookie_header: &str, target_url: &str) -> Result<Vec<BridgeCookie>, String> {
+ let cookie_header = cookie_header.trim().trim_end_matches(';').trim();
+ if cookie_header.is_empty() {
+ return Ok(Vec::new());
+ }
+
+ let fallback_domain = Url::parse(target_url)
+ .ok()
+ .and_then(|url| url.host_str().map(|host| host.trim().to_string()))
+ .filter(|host| !host.is_empty());
+
+ let mut cookies = Vec::new();
+ for part in cookie_header.split(';') {
+ let part = part.trim();
+ if part.is_empty() {
+ continue;
+ }
+ let Some((name, value)) = part.split_once('=') else {
+ continue;
+ };
+ let name = name.trim();
+ if name.is_empty() {
+ continue;
+ }
+ let (domain, url) = if name == "token_inner" {
+ (
+ Some("gateway.yunsheng.cn".to_string()),
+ Some("https://gateway.yunsheng.cn/".to_string()),
+ )
+ } else {
+ (fallback_domain.clone(), None)
+ };
+ let cookie = normalize_cookie(BridgeCookie {
+ domain,
+ url,
+ expiration_date: None,
+ http_only: false,
+ name: name.to_string(),
+ path: "/".to_string(),
+ secure: true,
+ same_site: Some("lax".to_string()),
+ value: value.trim().to_string(),
+ })?;
+ cookies.push(cookie);
+ }
+
+ Ok(cookies)
+}
+
 fn normalize_cookie(mut cookie: BridgeCookie) -> Result<BridgeCookie, String> {
  cookie.name = cookie.name.trim().to_string();
  cookie.path = if cookie.path.trim().is_empty() {
@@ -779,7 +873,40 @@ fn resolve_storage_items(
 
 #[cfg(test)]
 mod tests {
- use super::{extract_cookies, validate_extension_id};
+ use super::{cookies_from_header, extract_cookies, validate_extension_id};
+
+ #[test]
+ fn cookies_from_header_splits_pairs() {
+ let cookies = cookies_from_header(
+ "foo=1; token_inner=abc; bar=xyz",
+ "https://work.yunsheng.cn/shebaorobot/",
+ )
+ .unwrap();
+ assert_eq!(cookies.len(), 3);
+ assert_eq!(cookies[0].name, "foo");
+ assert_eq!(cookies[0].value, "1");
+ assert_eq!(cookies[1].name, "token_inner");
+ assert_eq!(cookies[1].value, "abc");
+ assert_eq!(cookies[1].domain.as_deref(), Some("gateway.yunsheng.cn"));
+ assert_eq!(
+ cookies[1].url.as_deref(),
+ Some("https://gateway.yunsheng.cn/")
+ );
+ assert_eq!(cookies[0].domain.as_deref(), Some("work.yunsheng.cn"));
+ assert_eq!(cookies[0].path, "/");
+ }
+
+ #[test]
+ fn cookies_from_header_empty() {
+ let cookies = cookies_from_header("   ", "https://work.yunsheng.cn/").unwrap();
+ assert!(cookies.is_empty());
+ }
+
+ #[test]
+ fn validate_extension_id_empty_is_chinese_error() {
+ let err = validate_extension_id("").expect_err("empty id");
+ assert!(err.contains("请先配置浏览器插件 ID"));
+ }
 
  #[test]
  fn extracts_cookies_string_field() {
