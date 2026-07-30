@@ -27,6 +27,7 @@ import {
   MenuOutline,
   MoonOutline,
   PlayOutline,
+  RefreshOutline,
   SaveOutline,
   SearchOutline,
   SunnyOutline,
@@ -54,6 +55,7 @@ import {
   normalizeBillMonthToken,
   ORDER_STATE_OPTIONS,
   runOrderInsSubscribeNow,
+  runOrderInsSubscribeFailed,
   saveOrderInsSubscribeConfig,
   searchOrderInsSubscribeOrgs,
   setOrderInsSubscribeAutoRun
@@ -72,6 +74,7 @@ const saving = ref(false)
 const searchingOrgs = ref(false)
 const loadingAreas = ref(false)
 const running = ref(false)
+const retryingFailed = ref(false)
 const clearingResult = ref(false)
 
 const cookies = ref('')
@@ -202,6 +205,20 @@ const normalizeGroupCell = (cell) => {
   if (kind === 'error') return { kind: 'error', message: String(cell.message || '查询失败') }
   return { kind: 'dash' }
 }
+
+const snapshotRowNeedsRetry = (item) => {
+  if (!item?.success) return true
+  const breakdown = item.groupBreakdown || {}
+  return RESULT_GROUP_COLUMNS.some(
+    ({ field }) => normalizeGroupCell(breakdown[field]).kind === 'error'
+  )
+}
+
+const failedRetryCount = computed(
+  () => (snapshot.value?.subscriptions || []).filter(snapshotRowNeedsRetry).length
+)
+
+const canRetryFailed = computed(() => hasSnapshot.value && failedRetryCount.value > 0)
 
 const rowHasGroupError = (breakdown) =>
   RESULT_GROUP_COLUMNS.some(({ field }) => normalizeGroupCell(breakdown?.[field]).kind === 'error')
@@ -534,30 +551,61 @@ const handleRunNow = async () => {
 
     const { data } = await runOrderInsSubscribeNow()
     applySnapshot(data)
-    const rows = data?.subscriptions || []
-    const failedRows = rows.filter((item) => !item.success)
-    const partialRows = rows.filter((item) => {
-      if (!item.success) return false
-      const breakdown = item.groupBreakdown || {}
-      return RESULT_GROUP_COLUMNS.some(
-        ({ field }) => normalizeGroupCell(breakdown[field]).kind === 'error'
-      )
-    })
-    if (failedRows.length > 0 && failedRows.length === rows.length) {
-      const tip = failedRows[0]?.error || '全部订阅查询失败'
-      message.error(`执行失败：${tip}`)
-    } else if (failedRows.length > 0 || partialRows.length > 0) {
-      message.warning(
-        `执行完成：待办 ${data?.total ?? 0}，${failedRows.length} 条失败` +
-          (partialRows.length ? `，${partialRows.length} 条部分成功` : '')
-      )
-    } else {
-      message.success(`执行完成：待办总数 ${data?.total ?? 0}`)
-    }
+    reportRunOutcome(data, '执行')
   } catch (error) {
     message.error(error?.message || '执行失败')
   } finally {
     running.value = false
+  }
+}
+
+const handleRetryFailed = async () => {
+  if (!canRetryFailed.value) {
+    message.info('当前没有失败的订阅可重试')
+    return
+  }
+  for (const [index, sub] of subscriptions.value.entries()) {
+    if (!hasAccountStatuses(sub)) {
+      message.warning(`订阅 ${index + 1}：请选择办理类型`)
+      return
+    }
+  }
+  retryingFailed.value = true
+  try {
+    const { data: saved } = await saveOrderInsSubscribeConfig(buildConfigPayload())
+    autoRunOnStartup.value = !!saved?.autoRunOnStartup
+    subscriptions.value = (saved?.subscriptions || []).map(normalizeSubscriptionItem)
+
+    const { data } = await runOrderInsSubscribeFailed()
+    applySnapshot(data)
+    reportRunOutcome(data, '重试失败')
+  } catch (error) {
+    message.error(error?.message || '重试失败')
+  } finally {
+    retryingFailed.value = false
+  }
+}
+
+const reportRunOutcome = (data, actionLabel) => {
+  const rows = data?.subscriptions || []
+  const failedRows = rows.filter((item) => !item.success)
+  const partialRows = rows.filter((item) => {
+    if (!item.success) return false
+    const breakdown = item.groupBreakdown || {}
+    return RESULT_GROUP_COLUMNS.some(
+      ({ field }) => normalizeGroupCell(breakdown[field]).kind === 'error'
+    )
+  })
+  if (failedRows.length > 0 && failedRows.length === rows.length) {
+    const tip = failedRows[0]?.error || '全部订阅查询失败'
+    message.error(`${actionLabel}失败：${tip}`)
+  } else if (failedRows.length > 0 || partialRows.length > 0) {
+    message.warning(
+      `${actionLabel}完成：待办 ${data?.total ?? 0}，${failedRows.length} 条失败` +
+        (partialRows.length ? `，${partialRows.length} 条部分成功` : '')
+    )
+  } else {
+    message.success(`${actionLabel}完成：待办总数 ${data?.total ?? 0}`)
   }
 }
 
@@ -827,11 +875,27 @@ onMounted(async () => {
             {{ hasYunshengCookies ? '已配置' : '未配置' }}
           </n-tag>
         </n-button>
-        <n-button type="primary" :loading="running" :disabled="loading" @click="handleRunNow">
+        <n-button
+          type="primary"
+          :loading="running"
+          :disabled="loading || retryingFailed"
+          @click="handleRunNow"
+        >
           <template #icon>
             <n-icon><PlayOutline /></n-icon>
           </template>
           立即执行
+        </n-button>
+        <n-button
+          secondary
+          :loading="retryingFailed"
+          :disabled="loading || running || !canRetryFailed"
+          @click="handleRetryFailed"
+        >
+          <template #icon>
+            <n-icon><RefreshOutline /></n-icon>
+          </template>
+          重试失败{{ failedRetryCount ? ` (${failedRetryCount})` : '' }}
         </n-button>
         <n-button
           secondary

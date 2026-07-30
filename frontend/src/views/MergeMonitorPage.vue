@@ -65,7 +65,8 @@ const form = ref({
   listPollIntervalSecs: 30,
   aiPollIntervalSecs: 10,
   allowedAuthors: [],
-  repositories: []
+  repositories: [],
+  autoStartOnLaunch: false
 })
 const authorsText = ref('')
 const repoPickerVisible = ref(false)
@@ -135,7 +136,8 @@ const loadAll = async () => {
       listPollIntervalSecs: config.listPollIntervalSecs ?? 30,
       aiPollIntervalSecs: config.aiPollIntervalSecs ?? 10,
       allowedAuthors: config.allowedAuthors || [],
-      repositories: (config.repositories || []).map((item) => ({ ...item }))
+      repositories: (config.repositories || []).map((item) => ({ ...item })),
+      autoStartOnLaunch: !!config.autoStartOnLaunch
     }
     authorsText.value = (config.allowedAuthors || []).join('\n')
     applySnapshot(snapRes.data)
@@ -161,7 +163,8 @@ const buildConfigPayload = () => {
       name: (item.name || '').trim(),
       repositoryId: (item.repositoryId || '').trim(),
       enabled: !!item.enabled
-    }))
+    })),
+    autoStartOnLaunch: !!form.value.autoStartOnLaunch
   }
 }
 
@@ -170,6 +173,7 @@ const handleSave = async () => {
   try {
     const { data } = await saveMergeMonitorConfig(buildConfigPayload())
     form.value.allowedAuthors = data.allowedAuthors || []
+    form.value.autoStartOnLaunch = !!data.autoStartOnLaunch
     authorsText.value = (data.allowedAuthors || []).join('\n')
     message.success('配置已保存（热更新）')
     const snap = await getMergeMonitorSnapshot()
@@ -178,6 +182,27 @@ const handleSave = async () => {
     message.error(error?.message || '保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+const handleAutoStartOnLaunchChange = async (value) => {
+  if (value) {
+    const validationError = validateConfig()
+    if (validationError) {
+      configExpanded.value = true
+      message.error(`无法开启：${validationError}`)
+      return
+    }
+  }
+  const previous = form.value.autoStartOnLaunch
+  form.value.autoStartOnLaunch = value
+  try {
+    const { data } = await saveMergeMonitorConfig(buildConfigPayload())
+    form.value.autoStartOnLaunch = !!data.autoStartOnLaunch
+    message.success(value ? '已开启启动时自动开启监控' : '已关闭启动时自动开启监控')
+  } catch (error) {
+    form.value.autoStartOnLaunch = previous
+    message.error(error?.message || '更新失败')
   }
 }
 
@@ -409,6 +434,14 @@ onBeforeUnmount(() => {
         <n-tag :type="running ? 'success' : 'default'" size="small">
           {{ running ? '监控中' : '已停止' }}
         </n-tag>
+        <label class="auto-start-switch" @click.stop>
+          <n-switch
+            :value="form.autoStartOnLaunch"
+            size="small"
+            @update:value="handleAutoStartOnLaunchChange"
+          />
+          <span>启动时自动开启监控</span>
+        </label>
         <n-button
           v-if="!running"
           type="primary"
@@ -737,6 +770,17 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.auto-start-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--n-text-color-2, #666);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
 }
 
 .title-mark {

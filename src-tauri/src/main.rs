@@ -452,6 +452,13 @@ async fn run_order_ins_subscribe_now(
 }
 
 #[tauri::command]
+async fn run_order_ins_subscribe_failed(
+    app: tauri::AppHandle,
+) -> Result<order_ins_subscribe::ExecutionSnapshot, String> {
+    order_ins_subscribe::run_order_ins_subscribe_failed(&app).await
+}
+
+#[tauri::command]
 async fn maybe_auto_run_order_ins_subscribe(
     app: tauri::AppHandle,
 ) -> Result<order_ins_subscribe::MaybeAutoRunOutcome, String> {
@@ -543,6 +550,7 @@ fn main() {
             clear_order_ins_subscribe_result,
             set_order_ins_subscribe_auto_run,
             run_order_ins_subscribe_now,
+            run_order_ins_subscribe_failed,
             maybe_auto_run_order_ins_subscribe,
             get_home_pending_summary
         ])

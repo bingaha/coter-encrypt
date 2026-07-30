@@ -278,6 +278,51 @@ impl InsGroupBreakdown {
             InsGroupKey::Other => self.other = cell,
         }
     }
+
+    pub fn has_error(&self) -> bool {
+        [
+            &self.gjj,
+            &self.medical,
+            &self.injury,
+            &self.heating,
+            &self.pension,
+            &self.unemployment,
+            &self.other,
+        ]
+        .iter()
+        .any(|cell| matches!(cell, GroupCell::Error { .. }))
+    }
+}
+
+/// 快照行是否需要「重试失败」：整行失败或部分分查询错。
+pub fn subscription_result_needs_retry(row: &SubscriptionRunResult) -> bool {
+    !row.success || row.group_breakdown.has_error()
+}
+
+/// 将重试得到的行合并进原快照：成功且无需重试的行原样保留；`executed_at` / `executed_date` 不变。
+pub fn merge_retry_into_snapshot(
+    previous: &ExecutionSnapshot,
+    retry_results: &[SubscriptionRunResult],
+) -> ExecutionSnapshot {
+    let retry_map: BTreeMap<&str, &SubscriptionRunResult> = retry_results
+        .iter()
+        .map(|row| (row.subscription_id.as_str(), row))
+        .collect();
+    let subscriptions: Vec<SubscriptionRunResult> = previous
+        .subscriptions
+        .iter()
+        .map(|row| {
+            retry_map
+                .get(row.subscription_id.as_str())
+                .map(|r| (*r).clone())
+                .unwrap_or_else(|| row.clone())
+        })
+        .collect();
+    build_execution_snapshot(
+        previous.executed_at.clone(),
+        previous.executed_date.clone(),
+        subscriptions,
+    )
 }
 
 /// 从已选险种中取出某组的码（保持已选顺序，去重由 normalize 保证）。
@@ -1200,11 +1245,70 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
     let now = chrono::Local::now();
     let today = now.date_naive();
     let executed_at = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let snapshot = execute_config_queries(app, &config, None, today, &executed_at).await?;
+    save_order_ins_subscribe_result_to_disk(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// 仅重试快照中失败/部分失败的订阅；成功行与原 `executedAt` 保持不变，合并后落盘。
+pub async fn run_order_ins_subscribe_failed(app: &AppHandle) -> Result<ExecutionSnapshot, String> {
+    let previous = load_order_ins_subscribe_result()?;
+    if previous.subscriptions.is_empty() {
+        return Err("暂无执行结果，请先「立即执行」".to_string());
+    }
+    let failed_ids: std::collections::HashSet<String> = previous
+        .subscriptions
+        .iter()
+        .filter(|row| subscription_result_needs_retry(row))
+        .map(|row| row.subscription_id.clone())
+        .collect();
+    if failed_ids.is_empty() {
+        return Err("当前没有失败的订阅可重试".to_string());
+    }
+
+    let config = load_order_ins_subscribe_config()?;
+    let runnable: std::collections::HashSet<String> = config
+        .subscriptions
+        .iter()
+        .filter(|sub| sub.enabled && failed_ids.contains(&sub.id))
+        .map(|sub| sub.id.clone())
+        .collect();
+    if runnable.is_empty() {
+        return Err("失败订阅已停用或不在配置中，无法重试".to_string());
+    }
+
+    let today = chrono::Local::now().date_naive();
+    // 重试用占位时间；合并时会改回原快照的 executed_at / executed_date
+    let placeholder_at = previous.executed_at.clone();
+    let retry_snap =
+        execute_config_queries(app, &config, Some(&runnable), today, &placeholder_at).await?;
+    let merged = merge_retry_into_snapshot(&previous, &retry_snap.subscriptions);
+    save_order_ins_subscribe_result_to_disk(&merged)?;
+    Ok(merged)
+}
+
+/// `only_ids` 为 None 时执行全部启用订阅；为 Some 时只执行集合内且启用的订阅。
+async fn execute_config_queries(
+    app: &AppHandle,
+    config: &OrderInsSubscribeConfig,
+    only_ids: Option<&std::collections::HashSet<String>>,
+    today: NaiveDate,
+    executed_at: &str,
+) -> Result<ExecutionSnapshot, String> {
+    let should_run = |sub: &Subscription| {
+        if !sub.enabled {
+            return false;
+        }
+        match only_ids {
+            None => true,
+            Some(ids) => ids.contains(&sub.id),
+        }
+    };
 
     // 未选主体且排除供应商大户：按地区缓存展开非供应商大户 ID。
     let mut area_org_cache: BTreeMap<i64, Result<Vec<OrgAccountRef>, String>> = BTreeMap::new();
     for sub in &config.subscriptions {
-        if !sub.enabled || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
+        if !should_run(sub) || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
             continue;
         }
         if area_org_cache.contains_key(&sub.area_id) {
@@ -1217,7 +1321,7 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
     let mut working = config.clone();
     let mut expand_errors: BTreeMap<String, String> = BTreeMap::new();
     for sub in &mut working.subscriptions {
-        if !sub.enabled || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
+        if !should_run(sub) || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
             continue;
         }
         match area_org_cache.get(&sub.area_id) {
@@ -1235,6 +1339,10 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
             }
             None => {}
         }
+    }
+
+    if only_ids.is_some() {
+        working.subscriptions.retain(|sub| should_run(sub));
     }
 
     let mut responses: BTreeMap<String, Result<Value, String>> = BTreeMap::new();
@@ -1263,15 +1371,14 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
         }
     }
 
-    let snapshot =
-        execute_subscriptions_pure(&working, today, &executed_at, &|sub, _b1, _b2| {
+    Ok(
+        execute_subscriptions_pure(&working, today, executed_at, &|sub, _b1, _b2| {
             responses
                 .get(&fetch_cache_key(sub))
                 .cloned()
                 .unwrap_or_else(|| Err("内部错误：缺少订阅查询结果".to_string()))
-        });
-    save_order_ins_subscribe_result_to_disk(&snapshot)?;
-    Ok(snapshot)
+        }),
+    )
 }
 
 /// 由快照构造首页待办摘要。
@@ -2088,5 +2195,72 @@ mod tests {
         assert_eq!(row.fee_month, "");
         assert_eq!(row.group_breakdown, InsGroupBreakdown::default());
         assert_eq!(row.group_breakdown.gjj, GroupCell::Dash);
+    }
+
+    #[test]
+    fn merge_retry_keeps_success_rows_and_executed_at() {
+        let ok = SubscriptionRunResult {
+            subscription_id: "ok".into(),
+            area_name: "A".into(),
+            org_count: 0,
+            bill_month: "202607".into(),
+            fee_month: String::new(),
+            account_statuses: vec![1],
+            ins_codes: vec![],
+            success: true,
+            error: None,
+            subscribed_total: 10,
+            group_breakdown: InsGroupBreakdown::default(),
+        };
+        let mut bad = ok.clone();
+        bad.subscription_id = "bad".into();
+        bad.success = false;
+        bad.subscribed_total = 0;
+        bad.error = Some("网络错误".into());
+
+        let previous = ExecutionSnapshot {
+            executed_at: "2026-07-30T10:00:00".into(),
+            executed_date: "2026-07-30".into(),
+            total: 10,
+            subscriptions: vec![ok.clone(), bad.clone()],
+        };
+
+        let mut fixed = bad.clone();
+        fixed.success = true;
+        fixed.error = None;
+        fixed.subscribed_total = 5;
+
+        assert!(subscription_result_needs_retry(&bad));
+        assert!(!subscription_result_needs_retry(&ok));
+
+        let merged = merge_retry_into_snapshot(&previous, &[fixed]);
+        assert_eq!(merged.executed_at, "2026-07-30T10:00:00");
+        assert_eq!(merged.executed_date, "2026-07-30");
+        assert_eq!(merged.subscriptions[0], ok);
+        assert!(merged.subscriptions[1].success);
+        assert_eq!(merged.subscriptions[1].subscribed_total, 5);
+        assert_eq!(merged.total, 15);
+    }
+
+    #[test]
+    fn partial_group_error_needs_retry() {
+        let mut row = SubscriptionRunResult {
+            subscription_id: "p".into(),
+            area_name: "A".into(),
+            org_count: 0,
+            bill_month: "202607".into(),
+            fee_month: String::new(),
+            account_statuses: vec![1],
+            ins_codes: vec![20],
+            success: true,
+            error: Some("部分失败".into()),
+            subscribed_total: 3,
+            group_breakdown: InsGroupBreakdown::default(),
+        };
+        row.group_breakdown.gjj = GroupCell::Count { value: 3 };
+        row.group_breakdown.medical = GroupCell::Error {
+            message: "超时".into(),
+        };
+        assert!(subscription_result_needs_retry(&row));
     }
 }

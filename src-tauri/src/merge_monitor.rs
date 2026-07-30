@@ -49,6 +49,9 @@ pub struct MergeMonitorConfig {
     pub ai_poll_interval_secs: u64,
     pub allowed_authors: Vec<String>,
     pub repositories: Vec<RepoConfigItem>,
+    /// 应用启动时若配置有效则自动开启监控。
+    #[serde(default)]
+    pub auto_start_on_launch: bool,
 }
 
 impl Default for MergeMonitorConfig {
@@ -60,6 +63,7 @@ impl Default for MergeMonitorConfig {
             ai_poll_interval_secs: 10,
             allowed_authors: Vec::new(),
             repositories: Vec::new(),
+            auto_start_on_launch: false,
         }
     }
 }
@@ -1200,6 +1204,38 @@ pub fn spawn_background(app: AppHandle) {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        {
+            let state = app_handle.state::<MergeMonitorState>();
+            let mut should_wake = false;
+            {
+                let mut runtime = state.inner.lock().await;
+                if runtime.config.auto_start_on_launch && !runtime.running {
+                    match validate_merge_monitor_config(&runtime.config) {
+                        Ok(()) => {
+                            runtime.running = true;
+                            runtime.force_immediate = true;
+                            runtime.list_last_exec = None;
+                            runtime.ai_last_exec = None;
+                            append_log(&mut runtime, "info", "启动时已自动开启合并监控");
+                            emit_snapshot(&app_handle, &runtime);
+                            should_wake = true;
+                        }
+                        Err(err) => {
+                            append_log(
+                                &mut runtime,
+                                "warn",
+                                &format!("启动时自动开启监控已跳过：{err}"),
+                            );
+                            emit_snapshot(&app_handle, &runtime);
+                        }
+                    }
+                }
+            }
+            if should_wake {
+                state.wake_loop();
+            }
+        }
+
         loop {
             let state = app_handle.state::<MergeMonitorState>();
 

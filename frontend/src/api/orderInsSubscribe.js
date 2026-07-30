@@ -19,6 +19,9 @@ export const setOrderInsSubscribeAutoRun = (enabled) =>
 
 export const runOrderInsSubscribeNow = () => invokeApi('run_order_ins_subscribe_now')
 
+/** 仅重试快照中失败/部分失败的订阅，成功行与原执行时间不变 */
+export const runOrderInsSubscribeFailed = () => invokeApi('run_order_ins_subscribe_failed')
+
 /** 启动/进入首页：按本地自然日门控，必要时自动执行一轮并返回快照 */
 export const maybeAutoRunOrderInsSubscribe = () => invokeApi('maybe_auto_run_order_ins_subscribe')
 

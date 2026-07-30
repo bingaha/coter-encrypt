@@ -53,6 +53,9 @@ pub struct PipelineMonitorConfig {
     pub pipelines: Vec<PipelineConfigItem>,
     #[serde(default)]
     pub auto_mode: bool,
+    /// 应用启动时若配置有效则自动开启循环监控。
+    #[serde(default)]
+    pub auto_start_on_launch: bool,
 }
 
 impl Default for PipelineMonitorConfig {
@@ -66,6 +69,7 @@ impl Default for PipelineMonitorConfig {
             tracked_source_branch: String::new(),
             pipelines: Vec::new(),
             auto_mode: false,
+            auto_start_on_launch: false,
         }
     }
 }
@@ -2314,6 +2318,35 @@ pub fn spawn_background(app: AppHandle) {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        {
+            let state = app_handle.state::<MonitorState>();
+            let mut runtime = state.inner.lock().await;
+            if runtime.config.auto_start_on_launch && !runtime.running {
+                match validate_loop_monitor_config(&runtime.config) {
+                    Ok(()) => {
+                        sync_pipeline_states(&mut runtime);
+                        runtime.mode = MonitorMode::Loop;
+                        runtime.single_pipeline_id.clear();
+                        runtime.running = true;
+                        append_log(
+                            &mut runtime,
+                            "info",
+                            "启动时已自动开启循环监控",
+                        );
+                        emit_snapshot(&app_handle, &runtime);
+                    }
+                    Err(err) => {
+                        append_log(
+                            &mut runtime,
+                            "warn",
+                            &format!("启动时自动开启监控已跳过：{err}"),
+                        );
+                        emit_snapshot(&app_handle, &runtime);
+                    }
+                }
+            }
+        }
+
         loop {
             let state = app_handle.state::<MonitorState>();
             let http = state.http_client();

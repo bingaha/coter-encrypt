@@ -88,7 +88,8 @@ const form = ref({
   postActionRefreshDelaySecs: 5,
   trackedSourceBranch: '',
   pipelines: [],
-  autoMode: false
+  autoMode: false,
+  autoStartOnLaunch: false
 })
 const whitelistDialogVisible = ref(false)
 const whitelistDialogIndex = ref(-1)
@@ -162,7 +163,8 @@ const loadAll = async () => {
         enabled: item.enabled !== false,
         allowedTriggerUsers: [...(item.allowedTriggerUsers || [])]
       })),
-      autoMode: !!config.autoMode
+      autoMode: !!config.autoMode,
+      autoStartOnLaunch: !!config.autoStartOnLaunch
     }
     applySnapshot(snapRes.data)
   } catch (error) {
@@ -192,7 +194,8 @@ const buildConfigPayload = () => {
       enabled: !!item.enabled,
       allowedTriggerUsers: [...(item.allowedTriggerUsers || [])]
     })),
-    autoMode: !!form.value.autoMode
+    autoMode: !!form.value.autoMode,
+    autoStartOnLaunch: !!form.value.autoStartOnLaunch
   }
 }
 
@@ -234,6 +237,7 @@ const handleSave = async () => {
   try {
     const { data } = await savePipelineMonitorConfig(buildConfigPayload())
     form.value.autoMode = !!data.autoMode
+    form.value.autoStartOnLaunch = !!data.autoStartOnLaunch
     message.success('配置已保存（热更新）')
     const snap = await getPipelineMonitorSnapshot()
     applySnapshot(snap.data)
@@ -360,6 +364,27 @@ const handleAutoChange = async (value) => {
     applySnapshot(snap.data)
   } catch (error) {
     message.error(error?.message || '更新自动模式失败')
+  }
+}
+
+const handleAutoStartOnLaunchChange = async (value) => {
+  if (value) {
+    const validationError = validateLoopMonitorConfig()
+    if (validationError) {
+      configExpanded.value = true
+      message.error(`无法开启：${validationError}`)
+      return
+    }
+  }
+  const previous = form.value.autoStartOnLaunch
+  form.value.autoStartOnLaunch = value
+  try {
+    const { data } = await savePipelineMonitorConfig(buildConfigPayload())
+    form.value.autoStartOnLaunch = !!data.autoStartOnLaunch
+    message.success(value ? '已开启启动时自动开启监控' : '已关闭启动时自动开启监控')
+  } catch (error) {
+    form.value.autoStartOnLaunch = previous
+    message.error(error?.message || '更新失败')
   }
 }
 
@@ -530,6 +555,14 @@ onBeforeUnmount(() => {
         >
           自动模式
         </n-checkbox>
+        <label class="auto-start-switch" @click.stop>
+          <n-switch
+            :value="form.autoStartOnLaunch"
+            size="small"
+            @update:value="handleAutoStartOnLaunchChange"
+          />
+          <span>启动时自动开启监控</span>
+        </label>
         <n-button
           v-if="!running"
           type="primary"
@@ -963,6 +996,17 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.auto-start-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--n-text-color-2, #666);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
 }
 
 .title-mark {
