@@ -22,6 +22,7 @@ import {
   ChevronDownOutline,
   ChevronUpOutline,
   CopyOutline,
+  DownloadOutline,
   KeyOutline,
   MenuOutline,
   MoonOutline,
@@ -32,8 +33,10 @@ import {
   TrashOutline,
   ListOutline
 } from '@vicons/ionicons5'
+import { save } from '@tauri-apps/plugin-dialog'
 import draggable from 'vuedraggable'
 import { useConfigStore } from '@/store'
+import { writeTextFile } from '@/api/tauriClient'
 import { loadYunshengAuthToken } from '@/api/yunshengAuth'
 import { useAppSettings } from '@/composables/useAppSettings'
 import {
@@ -100,6 +103,10 @@ const snapshot = ref({
 const hasSnapshot = computed(
   () => !!(snapshot.value?.executedAt || (snapshot.value?.subscriptions || []).length)
 )
+
+/** 隐藏成功且待办为 0 的行（默认开，不持久化） */
+const hideZeroPending = ref(true)
+const exporting = ref(false)
 
 const orgPickerVisible = ref(false)
 const orgPickerIndex = ref(-1)
@@ -222,6 +229,94 @@ const resultTableRows = computed(() =>
     }
   })
 )
+
+/** 表格展示行：失败行始终保留；成功且待办为 0 可被筛选隐藏 */
+const displayedResultRows = computed(() => {
+  if (!hideZeroPending.value) return resultTableRows.value
+  return resultTableRows.value.filter((row) => !(row.success && row.pending === 0))
+})
+
+const resultFilterEmpty = computed(
+  () =>
+    hasSnapshot.value &&
+    hideZeroPending.value &&
+    resultTableRows.value.length > 0 &&
+    displayedResultRows.value.length === 0
+)
+
+const statusLabelOf = (row) => {
+  if (!row.success) return '失败'
+  if (row.partial) return '部分成功'
+  return '成功'
+}
+
+const groupCellCsvValue = (cell) => {
+  const normalized = normalizeGroupCell(cell)
+  if (normalized.kind === 'count') return String(normalized.value)
+  if (normalized.kind === 'error') return '错误'
+  return '-'
+}
+
+const escapeCsvCell = (value) => {
+  const text = value == null ? '' : String(value)
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+  return text
+}
+
+const buildResultCsvContent = () => {
+  const headers = [
+    '地区',
+    '主体数',
+    '险种',
+    '办理类型',
+    '状态',
+    '账单月',
+    ...RESULT_GROUP_COLUMNS.map(({ title }) => title),
+    '待办',
+    '错误信息'
+  ]
+  const lines = [headers.map(escapeCsvCell).join(',')]
+  for (const row of resultTableRows.value) {
+    const cells = [
+      row.areaName,
+      row.orgCount > 0 ? String(row.orgCount) : '全部',
+      row.insCodesText,
+      row.accountStatusText,
+      statusLabelOf(row),
+      row.billMonth,
+      ...RESULT_GROUP_COLUMNS.map(({ field }) => groupCellCsvValue(row.groupBreakdown?.[field])),
+      row.success ? String(row.pending ?? 0) : '—',
+      row.error || ''
+    ]
+    lines.push(cells.map(escapeCsvCell).join(','))
+  }
+  return `\uFEFF${lines.join('\r\n')}\r\n`
+}
+
+const buildDefaultCsvFileName = () => {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  return `后道险种订单待办_${stamp}.csv`
+}
+
+const handleExportCsv = async () => {
+  if (!hasSnapshot.value || exporting.value) return
+  exporting.value = true
+  try {
+    const selected = await save({
+      defaultPath: buildDefaultCsvFileName(),
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    })
+    if (!selected) return
+    await writeTextFile(selected, buildResultCsvContent())
+    message.success('已导出 CSV')
+  } catch (error) {
+    message.error(error?.message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 const resultTableColumns = computed(() => [
   {
@@ -730,10 +825,32 @@ onMounted(async () => {
               <template v-else>尚未执行；点击「立即执行」会先保存全部订阅再查询</template>
             </n-text>
           </div>
+          <div class="panel-title-actions">
+            <label class="auto-run-switch" @click.stop>
+              <n-switch v-model:value="hideZeroPending" size="small" />
+              <span>隐藏待办为 0</span>
+            </label>
+            <n-button
+              size="small"
+              secondary
+              :loading="exporting"
+              :disabled="!hasSnapshot || loading"
+              @click="handleExportCsv"
+            >
+              <template #icon>
+                <n-icon><DownloadOutline /></n-icon>
+              </template>
+              导出 CSV
+            </n-button>
+          </div>
         </div>
 
         <div v-if="!hasSnapshot" class="empty">
           <n-text depth="3">暂无结果快照</n-text>
+        </div>
+
+        <div v-else-if="resultFilterEmpty" class="empty">
+          <n-text depth="3">已隐藏待办为 0 的结果；关闭筛选可查看全部</n-text>
         </div>
 
         <n-data-table
@@ -743,7 +860,7 @@ onMounted(async () => {
           :bordered="false"
           :single-line="false"
           :columns="resultTableColumns"
-          :data="resultTableRows"
+          :data="displayedResultRows"
           :row-key="(row) => row.key"
           :scroll-x="1280"
           :max-height="360"

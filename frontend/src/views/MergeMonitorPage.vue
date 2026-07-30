@@ -489,7 +489,7 @@ onBeforeUnmount(() => {
             </label>
             <label>
               <span>AI 轮询(秒)</span>
-              <n-input-number v-model:value="form.aiPollIntervalSecs" :min="3" :max="3600" style="width: 100%" />
+              <n-input-number v-model:value="form.aiPollIntervalSecs" :min="5" :max="3600" style="width: 100%" />
             </label>
           </div>
 

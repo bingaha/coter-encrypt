@@ -3,7 +3,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use directories::ProjectDirs;
@@ -12,19 +12,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 const CONFIG_FILE_NAME: &str = "yunxiao-merge.json";
 const STATE_EVENT: &str = "merge-monitor-state";
 const MAX_LOGS: usize = 200;
 const OPENAPI_BASE: &str = "https://openapi-rdc.aliyuncs.com";
+/// 睡醒后允许的判定容错（秒）：配置 30 → 过 29 秒即可执行。
+const SCHEDULE_TOLERANCE_SECS: u64 = 1;
+const MIN_POLL_INTERVAL_SECS: u64 = 5;
 
 const TOKEN_HINT: &str = "请先配置云效 Token";
 const ORG_HINT: &str = "请先配置组织 ID";
 const REPO_LIST_HINT: &str = "请先配置仓库列表";
 const ENABLED_HINT: &str = "请至少启用一个仓库";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoConfigItem {
     pub name: String,
@@ -62,8 +65,56 @@ impl Default for MergeMonitorConfig {
 }
 
 fn clamp_config(config: &mut MergeMonitorConfig) {
-    config.list_poll_interval_secs = config.list_poll_interval_secs.max(5);
-    config.ai_poll_interval_secs = config.ai_poll_interval_secs.max(3);
+    config.list_poll_interval_secs = config.list_poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+    config.ai_poll_interval_secs = config.ai_poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+}
+
+/// 查询条件是否变化（不含轮询间隔）。变则热更新后立刻查。
+fn query_conditions_changed(old: &MergeMonitorConfig, new: &MergeMonitorConfig) -> bool {
+    old.token.trim() != new.token.trim()
+        || old.org_id.trim() != new.org_id.trim()
+        || old.allowed_authors != new.allowed_authors
+        || old.repositories != new.repositories
+}
+
+fn is_due(last_exec: Option<Instant>, interval_secs: u64, now: Instant) -> bool {
+    match last_exec {
+        None => true,
+        Some(t) => {
+            let threshold = interval_secs.saturating_sub(SCHEDULE_TOLERANCE_SECS);
+            now.duration_since(t) >= Duration::from_secs(threshold)
+        }
+    }
+}
+
+/// 距离 `last_exec + interval` 的剩余秒数，向上取整，最少 1；已到期返回 0。
+fn sleep_secs_until_due(last_exec: Option<Instant>, interval_secs: u64, now: Instant) -> u64 {
+    if is_due(last_exec, interval_secs, now) {
+        return 0;
+    }
+    let Some(t) = last_exec else {
+        return 0;
+    };
+    let due_at = t + Duration::from_secs(interval_secs);
+    let remaining = due_at.saturating_duration_since(now);
+    let secs = if remaining.subsec_nanos() > 0 {
+        remaining.as_secs().saturating_add(1)
+    } else {
+        remaining.as_secs()
+    };
+    secs.max(1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CycleOutcome {
+    /// 未在运行
+    Stopped,
+    /// 成功并已打点；外层按锚点补睡
+    Scheduled,
+    /// 需要立刻再跑一轮（模式切换：列表→AI / AI→列表）
+    ImmediateAgain,
+    /// 失败退避：打断式睡眠指定秒数，不更新锚点
+    Backoff(u64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,11 +220,19 @@ struct MergeRuntime {
     todos: Vec<MergeTodo>,
     logs: VecDeque<LogEntry>,
     repo_summaries: HashMap<String, String>,
+    /// 列表轮询上次成功结束时间（停止时清空）
+    list_last_exec: Option<Instant>,
+    /// AI 轮询上次成功结束时间（停止时清空）
+    ai_last_exec: Option<Instant>,
+    /// 启动 / 查询条件热更新 / 模式切换后强制立刻执行
+    force_immediate: bool,
 }
 
 pub struct MergeMonitorState {
     inner: Mutex<MergeRuntime>,
     pub loop_started: AtomicBool,
+    /// 打断后台 sleep：保存配置 / 启停时 notify，使新间隔或状态立刻生效。
+    wake: Notify,
     http: std::sync::Mutex<Client>,
 }
 
@@ -187,6 +246,11 @@ impl MergeMonitorState {
 
     pub fn replace_http_client(&self, client: Client) {
         *self.http.lock().unwrap_or_else(|e| e.into_inner()) = client;
+    }
+
+    fn wake_loop(&self) {
+        // notify_one：若当前无人 wait，会留下 permit，下一轮 sleep 会被立刻跳过。
+        self.wake.notify_one();
     }
 }
 
@@ -291,8 +355,12 @@ pub fn create_state() -> MergeMonitorState {
             todos: Vec::new(),
             logs: VecDeque::new(),
             repo_summaries: HashMap::new(),
+            list_last_exec: None,
+            ai_last_exec: None,
+            force_immediate: false,
         }),
         loop_started: AtomicBool::new(false),
+        wake: Notify::new(),
         http: std::sync::Mutex::new(http),
     }
 }
@@ -336,9 +404,16 @@ pub async fn save_merge_monitor_config(
     clamp_config(&mut config);
     save_config_to_disk(&config)?;
     let mut runtime = state.inner.lock().await;
+    let conditions_changed = query_conditions_changed(&runtime.config, &config);
     runtime.config = config.clone();
+    if conditions_changed && runtime.running {
+        // Token/仓库/白名单等变了：立刻查；纯改间隔则只打断 sleep 后按锚点补睡
+        runtime.force_immediate = true;
+    }
     append_log(&mut runtime, "info", "配置已保存");
     emit_snapshot(&app, &runtime);
+    drop(runtime);
+    state.wake_loop();
     Ok(config)
 }
 
@@ -721,11 +796,11 @@ async fn list_change_request_comments(
     Ok(values_as_array(&data))
 }
 
-async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorState) -> u64 {
+async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorState) -> CycleOutcome {
     let (running, token, org_id, list_poll, ai_poll, allowed_authors, enabled_repos, current) = {
         let runtime = state.inner.lock().await;
         if !runtime.running {
-            return 1;
+            return CycleOutcome::Stopped;
         }
         let enabled_repos: Vec<(String, String)> = runtime
             .config
@@ -738,8 +813,14 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
             runtime.running,
             runtime.config.token.clone(),
             runtime.config.org_id.clone(),
-            runtime.config.list_poll_interval_secs.max(5),
-            runtime.config.ai_poll_interval_secs.max(3),
+            runtime
+                .config
+                .list_poll_interval_secs
+                .max(MIN_POLL_INTERVAL_SECS),
+            runtime
+                .config
+                .ai_poll_interval_secs
+                .max(MIN_POLL_INTERVAL_SECS),
             runtime.config.allowed_authors.clone(),
             enabled_repos,
             runtime.current.clone(),
@@ -747,7 +828,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     };
 
     if !running {
-        return 1;
+        return CycleOutcome::Stopped;
     }
 
     if token.trim().is_empty() || org_id.trim().is_empty() {
@@ -760,7 +841,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
             );
             emit_snapshot(app, &runtime);
         }
-        return list_poll;
+        return CycleOutcome::Backoff(list_poll);
     }
 
     // Track AI for current MR.
@@ -768,7 +849,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
         {
             let mut runtime = state.inner.lock().await;
             if !runtime.running {
-                return 1;
+                return CycleOutcome::Stopped;
             }
             append_log(
                 &mut runtime,
@@ -797,7 +878,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                 if !still_open {
                     let mut runtime = state.inner.lock().await;
                     if !runtime.running {
-                        return 1;
+                        return CycleOutcome::Stopped;
                     }
                     if runtime
                         .current
@@ -816,7 +897,8 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         runtime.current = None;
                         emit_snapshot(app, &runtime);
                     }
-                    return 1;
+                    // AI 跟踪结束 → 立刻拉列表
+                    return CycleOutcome::ImmediateAgain;
                 }
             }
             Err(error) => {
@@ -851,7 +933,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     // write cannot notify without updating state (or after abandon).
                     let mut runtime = state.inner.lock().await;
                     if !runtime.running {
-                        return 1;
+                        return CycleOutcome::Stopped;
                     }
                     if runtime
                         .current
@@ -887,6 +969,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                             .insert((tracked.project_id, tracked.local_id));
                         runtime.todos.push(todo_from_tracked(&tracked, outcome));
                         runtime.current = None;
+                        runtime.ai_last_exec = Some(Instant::now());
                         append_log(
                             &mut runtime,
                             "info",
@@ -900,7 +983,8 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                         );
                         emit_snapshot(app, &runtime);
                     }
-                    return 1;
+                    // AI 跟踪结束 → 立刻拉列表
+                    return CycleOutcome::ImmediateAgain;
                 }
 
                 let mut runtime = state.inner.lock().await;
@@ -919,6 +1003,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     } else {
                         "等待触发或出报告"
                     };
+                    runtime.ai_last_exec = Some(Instant::now());
                     append_log(
                         &mut runtime,
                         "info",
@@ -931,7 +1016,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     );
                     emit_snapshot(app, &runtime);
                 }
-                return ai_poll;
+                return CycleOutcome::Scheduled;
             }
             Err(error) => {
                 let mut runtime = state.inner.lock().await;
@@ -943,7 +1028,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                     );
                     emit_snapshot(app, &runtime);
                 }
-                return ai_poll;
+                return CycleOutcome::Backoff(ai_poll);
             }
         }
     }
@@ -952,7 +1037,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     {
         let mut runtime = state.inner.lock().await;
         if !runtime.running {
-            return 1;
+            return CycleOutcome::Stopped;
         }
         if enabled_repos.is_empty() {
             append_log(
@@ -961,7 +1046,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
                 "没有已启用的仓库，跳过合并列表查询",
             );
             emit_snapshot(app, &runtime);
-            return list_poll;
+            return CycleOutcome::Backoff(list_poll);
         }
         append_log(
             &mut runtime,
@@ -975,12 +1060,14 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
     let mut all_candidates = Vec::new();
     let mut repo_summaries = HashMap::new();
     let mut any_repo_list_failed = false;
+    let mut any_repo_list_ok = false;
     let mut per_repo_lines = Vec::new();
 
     for (repo_id, repo_name) in &enabled_repos {
         let fallback_project_id = repo_id.trim().parse::<i64>().unwrap_or(0);
         match list_opened_change_requests(http, &token, &org_id, repo_id.trim()).await {
             Ok(items) => {
+                any_repo_list_ok = true;
                 let mut parsed = 0usize;
                 for item in &items {
                     if let Some(candidate) =
@@ -1013,7 +1100,7 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
 
     let mut runtime = state.inner.lock().await;
     if !runtime.running {
-        return 1;
+        return CycleOutcome::Stopped;
     }
 
     runtime.repo_summaries = repo_summaries;
@@ -1037,8 +1124,15 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
 
     if runtime.current.is_some() {
         emit_snapshot(app, &runtime);
-        return ai_poll;
+        return CycleOutcome::ImmediateAgain;
     }
+
+    if !any_repo_list_ok {
+        emit_snapshot(app, &runtime);
+        return CycleOutcome::Backoff(list_poll);
+    }
+
+    runtime.list_last_exec = Some(Instant::now());
 
     let filtered =
         filter_whitelist_candidates(&all_candidates, &allowed_authors, &runtime.processed);
@@ -1076,12 +1170,22 @@ async fn run_monitor_cycle(app: &AppHandle, http: &Client, state: &MergeMonitorS
         );
         runtime.current = Some(tracked_from_candidate(&picked));
         emit_snapshot(app, &runtime);
-        // 0 = 不睡眠，下一轮立刻拉评论（再进入 ai_poll 间隔）
-        return 0;
+        // 列表→AI：立刻拉评论
+        return CycleOutcome::ImmediateAgain;
     }
 
     emit_snapshot(app, &runtime);
-    list_poll
+    CycleOutcome::Scheduled
+}
+
+async fn interruptible_sleep(state: &MergeMonitorState, sleep_secs: u64) {
+    if sleep_secs == 0 {
+        return;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(sleep_secs)) => {}
+        _ = state.wake.notified() => {}
+    }
 }
 
 pub fn spawn_background(app: AppHandle) {
@@ -1098,10 +1202,65 @@ pub fn spawn_background(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             let state = app_handle.state::<MergeMonitorState>();
-            let http = state.http_client();
-            let sleep_secs = run_monitor_cycle(&app_handle, &http, &state).await;
-            if sleep_secs > 0 {
-                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+
+            let plan = {
+                let runtime = state.inner.lock().await;
+                if !runtime.running {
+                    None // idle：短睡等待启停/配置
+                } else if runtime.force_immediate {
+                    Some(0u64) // 0 = 立刻执行
+                } else {
+                    let now = Instant::now();
+                    let (last_exec, interval) = if runtime.current.is_some() {
+                        (
+                            runtime.ai_last_exec,
+                            runtime
+                                .config
+                                .ai_poll_interval_secs
+                                .max(MIN_POLL_INTERVAL_SECS),
+                        )
+                    } else {
+                        (
+                            runtime.list_last_exec,
+                            runtime
+                                .config
+                                .list_poll_interval_secs
+                                .max(MIN_POLL_INTERVAL_SECS),
+                        )
+                    };
+                    if is_due(last_exec, interval, now) {
+                        Some(0)
+                    } else {
+                        Some(sleep_secs_until_due(last_exec, interval, now))
+                    }
+                }
+            };
+
+            match plan {
+                None => {
+                    interruptible_sleep(&state, 1).await;
+                }
+                Some(0) => {
+                    {
+                        let mut runtime = state.inner.lock().await;
+                        runtime.force_immediate = false;
+                    }
+                    let http = state.http_client();
+                    match run_monitor_cycle(&app_handle, &http, &state).await {
+                        CycleOutcome::Stopped => {}
+                        CycleOutcome::Scheduled => {}
+                        CycleOutcome::ImmediateAgain => {
+                            let mut runtime = state.inner.lock().await;
+                            runtime.force_immediate = true;
+                        }
+                        CycleOutcome::Backoff(secs) => {
+                            interruptible_sleep(&state, secs.max(1)).await;
+                        }
+                    }
+                }
+                Some(sleep_secs) => {
+                    interruptible_sleep(&state, sleep_secs).await;
+                }
             }
         }
     });
@@ -1117,9 +1276,14 @@ pub async fn start_merge_monitor(
     }
     validate_merge_monitor_config(&runtime.config)?;
     runtime.running = true;
+    runtime.list_last_exec = None;
+    runtime.ai_last_exec = None;
+    runtime.force_immediate = true;
     append_log(&mut runtime, "info", "合并监控已启动");
     let snapshot = build_snapshot(&runtime);
     emit_snapshot(&app, &runtime);
+    drop(runtime);
+    state.wake_loop();
     Ok(snapshot)
 }
 
@@ -1130,9 +1294,14 @@ pub async fn stop_merge_monitor(
     let mut runtime = state.inner.lock().await;
     runtime.running = false;
     runtime.current = None;
+    runtime.list_last_exec = None;
+    runtime.ai_last_exec = None;
+    runtime.force_immediate = false;
     append_log(&mut runtime, "info", "合并监控已停止");
     let snapshot = build_snapshot(&runtime);
     emit_snapshot(&app, &runtime);
+    drop(runtime);
+    state.wake_loop();
     Ok(snapshot)
 }
 
@@ -1419,6 +1588,9 @@ mod tests {
             todos,
             logs: VecDeque::new(),
             repo_summaries: HashMap::new(),
+            list_last_exec: None,
+            ai_last_exec: None,
+            force_immediate: false,
         };
         cleanup_stale(&mut runtime, &opened);
 
@@ -1426,5 +1598,81 @@ mod tests {
         assert!(runtime.processed.contains(&(1, 25)));
         assert_eq!(runtime.todos.len(), 1);
         assert_eq!(runtime.todos[0].local_id, 25);
+    }
+
+    #[test]
+    fn schedule_due_without_anchor() {
+        let now = Instant::now();
+        assert!(is_due(None, 30, now));
+        assert_eq!(sleep_secs_until_due(None, 30, now), 0);
+    }
+
+    #[test]
+    fn schedule_due_with_tolerance() {
+        let start = Instant::now();
+        // 模拟 last_exec 在「现在」之前 29 秒：对 30 秒间隔应到期
+        let last = start - Duration::from_secs(29);
+        assert!(is_due(Some(last), 30, start));
+        assert_eq!(sleep_secs_until_due(Some(last), 30, start), 0);
+
+        let last_early = start - Duration::from_secs(28);
+        assert!(!is_due(Some(last_early), 30, start));
+        assert_eq!(sleep_secs_until_due(Some(last_early), 30, start), 2);
+    }
+
+    #[test]
+    fn schedule_hot_reload_interval_shortens_remaining() {
+        let now = Instant::now();
+        let last = now - Duration::from_secs(10);
+        // 原 600 → 剩余约 590；改为 30 → 剩余 20
+        assert_eq!(sleep_secs_until_due(Some(last), 600, now), 590);
+        assert_eq!(sleep_secs_until_due(Some(last), 30, now), 20);
+    }
+
+    #[test]
+    fn schedule_ceil_fractional_remaining() {
+        let now = Instant::now();
+        // 已过 28.5s、间隔 30：未到容错阈值(29)，剩余 1.5s → 向上取整为 2
+        let last = now - Duration::from_millis(28_500);
+        assert!(!is_due(Some(last), 30, now));
+        assert_eq!(sleep_secs_until_due(Some(last), 30, now), 2);
+    }
+
+    #[test]
+    fn query_conditions_ignore_interval_only_change() {
+        let mut old = MergeMonitorConfig::default();
+        old.token = "t".into();
+        old.org_id = "o".into();
+        old.list_poll_interval_secs = 600;
+        old.ai_poll_interval_secs = 10;
+        old.allowed_authors = vec!["A".into()];
+        old.repositories = vec![RepoConfigItem {
+            name: "r".into(),
+            repository_id: "1".into(),
+            enabled: true,
+        }];
+
+        let mut only_interval = old.clone();
+        only_interval.list_poll_interval_secs = 30;
+        only_interval.ai_poll_interval_secs = 5;
+        assert!(!query_conditions_changed(&old, &only_interval));
+
+        let mut token_changed = old.clone();
+        token_changed.token = "t2".into();
+        assert!(query_conditions_changed(&old, &token_changed));
+
+        let mut authors_changed = old.clone();
+        authors_changed.allowed_authors = vec!["B".into()];
+        assert!(query_conditions_changed(&old, &authors_changed));
+    }
+
+    #[test]
+    fn clamp_ai_poll_min_is_five() {
+        let mut config = MergeMonitorConfig::default();
+        config.list_poll_interval_secs = 1;
+        config.ai_poll_interval_secs = 3;
+        clamp_config(&mut config);
+        assert_eq!(config.list_poll_interval_secs, 5);
+        assert_eq!(config.ai_poll_interval_secs, 5);
     }
 }

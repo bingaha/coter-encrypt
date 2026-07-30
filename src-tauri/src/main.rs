@@ -25,6 +25,21 @@ fn ping() -> &'static str {
     "pong"
 }
 
+/// 将文本写入用户选定路径（如 CSV 导出）。
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    use std::fs;
+    use std::path::Path;
+
+    let target = Path::new(&path);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+    }
+    fs::write(target, content.as_bytes()).map_err(|e| format!("写入文件失败: {e}"))
+}
+
 #[tauri::command]
 fn list_projects() -> Result<Vec<project_store::Project>, String> {
     project_store::list_projects()
@@ -470,6 +485,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             ping,
+            write_text_file,
             list_projects,
             get_project_by_id,
             get_project_by_name,

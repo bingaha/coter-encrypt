@@ -37,3 +37,7 @@ export const invokeApi = async (command, args) => {
  throw normalizeTauriError(error)
  }
 }
+
+/** 将文本写入用户选定的本地路径 */
+export const writeTextFile = (path, content) =>
+ invokeApi('write_text_file', { path, content })

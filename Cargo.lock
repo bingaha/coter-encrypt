@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "coter-encrypt-desktop"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "chrono",
  "coter-core",
@@ -4974,7 +4974,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
