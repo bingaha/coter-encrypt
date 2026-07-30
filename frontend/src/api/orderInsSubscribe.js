@@ -36,7 +36,10 @@ export const ORDER_STATE_OPTIONS = [
 
 export const DEFAULT_ORDER_STATES = [1, 2, 3, 7, 8]
 
-/** 办理类型（accountStatus） */
+/** 新建订阅默认办理类型：报增 / 停缴 / 补缴 */
+export const DEFAULT_ACCOUNT_STATUSES = [1, 3, 4]
+
+/** 办理类型（accountStatuses → 请求 accountStatusList） */
 export const ACCOUNT_STATUS_OPTIONS = [
   { value: 1, label: '报增' },
   { value: 2, label: '在缴' },
@@ -110,9 +113,10 @@ export const createDefaultSubscription = () => ({
   areaId: 0,
   areaName: '',
   orgAccounts: [],
+  excludeSupplierAccounts: true,
   billMonth1: 'current',
   billMonth2: 'current',
-  accountStatus: null,
+  accountStatuses: [...DEFAULT_ACCOUNT_STATUSES],
   orderStates: [...DEFAULT_ORDER_STATES],
   insCodes: []
 })

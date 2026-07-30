@@ -149,9 +149,29 @@ const onBillMonthKindChange = (sub, field, kind) => {
   }
 }
 
-const accountStatusLabel = (status) => {
-  const hit = ACCOUNT_STATUS_OPTIONS.find((item) => item.value === Number(status))
-  return hit?.label || '未选办理类型'
+const accountStatusesLabel = (statuses) => {
+  const list = Array.isArray(statuses)
+    ? statuses
+        .map((status) => ACCOUNT_STATUS_OPTIONS.find((item) => item.value === Number(status))?.label)
+        .filter(Boolean)
+    : []
+  return list.length ? list.join('、') : '未选办理类型'
+}
+
+const hasAccountStatuses = (sub) =>
+  Array.isArray(sub?.accountStatuses) &&
+  sub.accountStatuses.some((s) => [1, 2, 3, 4, 5].includes(Number(s)))
+
+const normalizeAccountStatuses = (raw) => {
+  const seen = new Set()
+  const out = []
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const n = Number(item)
+    if (![1, 2, 3, 4, 5].includes(n) || seen.has(n)) continue
+    seen.add(n)
+    out.push(n)
+  }
+  return out
 }
 
 const insCodeLabel = (code) => {
@@ -218,10 +238,11 @@ const resultTableRows = computed(() =>
       success,
       partial,
       billMonth: item.billMonth || '—',
+      feeMonth: item.feeMonth || '—',
       areaName: item.areaName || '—',
       orgCount: Number(item.orgCount) || 0,
-      accountStatus: Number(item.accountStatus) || 0,
-      accountStatusText: accountStatusLabel(item.accountStatus),
+      accountStatuses: normalizeAccountStatuses(item.accountStatuses),
+      accountStatusText: accountStatusesLabel(item.accountStatuses),
       insCodesText: formatInsCodesFull(item.insCodes),
       pending: Number(item.subscribedTotal) || 0,
       error: item.error || '',
@@ -271,6 +292,7 @@ const buildResultCsvContent = () => {
     '办理类型',
     '状态',
     '账单月',
+    '费用月',
     ...RESULT_GROUP_COLUMNS.map(({ title }) => title),
     '待办',
     '错误信息'
@@ -284,6 +306,7 @@ const buildResultCsvContent = () => {
       row.accountStatusText,
       statusLabelOf(row),
       row.billMonth,
+      row.feeMonth,
       ...RESULT_GROUP_COLUMNS.map(({ field }) => groupCellCsvValue(row.groupBreakdown?.[field])),
       row.success ? String(row.pending ?? 0) : '—',
       row.error || ''
@@ -369,6 +392,12 @@ const resultTableColumns = computed(() => [
     width: 120,
     ellipsis: { tooltip: true }
   },
+  {
+    title: '费用月',
+    key: 'feeMonth',
+    width: 120,
+    ellipsis: { tooltip: true }
+  },
   ...RESULT_GROUP_COLUMNS.map(({ title, field }) => ({
     title,
     key: `group-${field}`,
@@ -400,7 +429,11 @@ const orgCountOf = (sub) => (Array.isArray(sub?.orgAccounts) ? sub.orgAccounts.l
 const orgDisplayText = (sub) => {
   const n = orgCountOf(sub)
   if (!sub?.areaName && !n) return ''
-  if (!n) return `${sub.areaName || ''} · 全部主体`
+  if (!n) {
+    return sub.excludeSupplierAccounts
+      ? `${sub.areaName || ''} · 全部非供应商大户`
+      : `${sub.areaName || ''} · 全部主体`
+  }
   return `${sub.areaName || '未选地区'} · ${n} 个主体`
 }
 
@@ -459,11 +492,9 @@ const normalizeSubscriptionItem = (item) => ({
         accountName: String(org.accountName || '').trim()
       }))
     : [],
+  accountStatuses: normalizeAccountStatuses(item.accountStatuses),
   billMonth1: normalizeBillMonthToken(item.billMonth1),
   billMonth2: normalizeBillMonthToken(item.billMonth2),
-  accountStatus: [1, 2, 3, 4, 5].includes(Number(item.accountStatus))
-    ? Number(item.accountStatus)
-    : null,
   orderStates: Array.isArray(item.orderStates) ? [...item.orderStates] : [],
   insCodes: Array.isArray(item.insCodes) ? [...item.insCodes] : []
 })
@@ -490,7 +521,7 @@ const loadAll = async () => {
 
 const handleRunNow = async () => {
   for (const [index, sub] of subscriptions.value.entries()) {
-    if (![1, 2, 3, 4, 5].includes(Number(sub.accountStatus))) {
+    if (!hasAccountStatuses(sub)) {
       message.warning(`订阅 ${index + 1}：请选择办理类型`)
       return
     }
@@ -628,6 +659,16 @@ const onOrgPickerAreaChange = (value) => {
   orgPickerKeyword.value = ''
 }
 
+const onOrgPickerExcludeChange = (value) => {
+  const sub = subscriptions.value[orgPickerIndex.value]
+  if (!sub) return
+  sub.excludeSupplierAccounts = !!value
+  // 已有列表时按新开关重搜，与订阅详情中的同一字段同步
+  if (orgPickerAreaId.value && orgHits.value.length) {
+    handleSearchOrgs()
+  }
+}
+
 const handleSearchOrgs = async () => {
   // 未选地区：不调接口，表现得像搜不到
   if (!orgPickerAreaId.value) {
@@ -636,11 +677,13 @@ const handleSearchOrgs = async () => {
   }
   searchingOrgs.value = true
   try {
+    const sub = subscriptions.value[orgPickerIndex.value]
     const { data } = await searchOrderInsSubscribeOrgs({
       areaId: orgPickerAreaId.value,
       accountName: String(orgPickerKeyword.value || '').trim(),
       pageNo: 1,
-      pageSize: 50
+      pageSize: 50,
+      excludeSupplierAccounts: !!sub?.excludeSupplierAccounts
     })
     orgHits.value = data || []
     if (!orgHits.value.length) {
@@ -689,7 +732,9 @@ const applyOrgPicker = () => {
   message.success(
     sub.orgAccounts.length
       ? `已选择 ${sub.orgAccounts.length} 个主体`
-      : '已选择地区（全部主体）'
+      : sub.excludeSupplierAccounts
+        ? '已选择地区（全部非供应商大户）'
+        : '已选择地区（全部主体）'
   )
 }
 
@@ -706,11 +751,10 @@ const buildConfigPayload = () => ({
           accountName: String(org.accountName || '').trim()
         }))
       : [],
+    excludeSupplierAccounts: !!item.excludeSupplierAccounts,
     billMonth1: normalizeBillMonthToken(item.billMonth1),
     billMonth2: normalizeBillMonthToken(item.billMonth2),
-    accountStatus: [1, 2, 3, 4, 5].includes(Number(item.accountStatus))
-      ? Number(item.accountStatus)
-      : 0,
+    accountStatuses: normalizeAccountStatuses(item.accountStatuses),
     orderStates: Array.isArray(item.orderStates) ? item.orderStates.map(Number) : [],
     insCodes: Array.isArray(item.insCodes) ? item.insCodes.map(Number) : []
   }))
@@ -718,7 +762,7 @@ const buildConfigPayload = () => ({
 
 const handleSave = async () => {
   for (const [index, sub] of subscriptions.value.entries()) {
-    if (![1, 2, 3, 4, 5].includes(Number(sub.accountStatus))) {
+    if (!hasAccountStatuses(sub)) {
       message.warning(`订阅 ${index + 1}：请选择办理类型`)
       return
     }
@@ -862,7 +906,7 @@ onMounted(async () => {
           :columns="resultTableColumns"
           :data="displayedResultRows"
           :row-key="(row) => row.key"
-          :scroll-x="1280"
+          :scroll-x="1400"
           :max-height="360"
         />
       </section>
@@ -933,9 +977,15 @@ onMounted(async () => {
                   </span>
                   <strong class="sub-name">{{ sub.areaName || `订阅 ${index + 1}` }}</strong>
                   <n-tag size="small" :bordered="false">
-                    {{ orgCountOf(sub) ? `${orgCountOf(sub)} 个主体` : '全部主体' }}
+                    {{
+                      orgCountOf(sub)
+                        ? `${orgCountOf(sub)} 个主体`
+                        : sub.excludeSupplierAccounts
+                          ? '全部非供应商大户'
+                          : '全部主体'
+                    }}
                   </n-tag>
-                  <n-tag size="small" :bordered="false">{{ accountStatusLabel(sub.accountStatus) }}</n-tag>
+                  <n-tag size="small" :bordered="false">{{ accountStatusesLabel(sub.accountStatuses) }}</n-tag>
                   <n-tag size="small" :bordered="false">{{ billMonthSummary(sub) }}</n-tag>
                   <n-tag v-if="!sub.enabled" size="small" type="warning" :bordered="false">已禁用</n-tag>
                 </div>
@@ -981,7 +1031,7 @@ onMounted(async () => {
                     class="org-picker-input"
                     :value="orgDisplayText(sub)"
                     readonly
-                    placeholder="点击选择地区；主体可多选或留空（全部主体）"
+                    placeholder="点击选择地区；主体可多选或留空（未选=全部）"
                     @click="openOrgPicker(index)"
                   />
                   <n-button secondary @click="openOrgPicker(index)">
@@ -992,13 +1042,18 @@ onMounted(async () => {
                   </n-button>
                 </div>
               </label>
-              <label>
-                <span>办理类型</span>
-                <n-select
-                  v-model:value="sub.accountStatus"
-                  :options="accountStatusOptions"
-                  placeholder="请选择办理类型"
-                />
+              <label class="account-status-field">
+                <span>办理类型（可多选）</span>
+                <n-checkbox-group v-model:value="sub.accountStatuses">
+                  <div class="check-grid">
+                    <n-checkbox
+                      v-for="opt in accountStatusOptions"
+                      :key="opt.value"
+                      :value="opt.value"
+                      :label="opt.label"
+                    />
+                  </div>
+                </n-checkbox-group>
               </label>
               <div class="bill-month-field">
                 <span class="bill-month-label">账单月</span>
@@ -1046,7 +1101,23 @@ onMounted(async () => {
               </n-tag>
             </div>
             <div v-else-if="sub.areaId" class="selected-orgs">
-              <n-text depth="3">未选主体：将按该地区全部主体查询</n-text>
+              <n-text depth="3">
+                {{
+                  sub.excludeSupplierAccounts
+                    ? '未选主体：将按该地区全部非供应商大户查询'
+                    : '未选主体：将按该地区全部主体查询'
+                }}
+              </n-text>
+            </div>
+
+            <div class="filter-block filter-switch-row">
+              <div class="filter-title">排除供应商大户</div>
+              <div class="filter-switch-body">
+                <n-switch v-model:value="sub.excludeSupplierAccounts" size="small" />
+                <n-text depth="3">
+                  开启后主体选择只列非供应商大户；未选主体时执行前按非供应商大户全量查询
+                </n-text>
+              </div>
             </div>
 
             <div class="filter-block">
@@ -1102,6 +1173,17 @@ onMounted(async () => {
             @update:value="onOrgPickerAreaChange"
           />
         </label>
+        <div class="org-picker-exclude">
+          <span class="org-picker-exclude-label">排除供应商大户</span>
+          <n-switch
+            :value="!!subscriptions[orgPickerIndex]?.excludeSupplierAccounts"
+            size="small"
+            @update:value="onOrgPickerExcludeChange"
+          />
+          <n-text depth="3">
+            与订阅配置为同一开关；开启后搜索只列非供应商大户
+          </n-text>
+        </div>
         <div class="org-search-row">
           <n-input
             v-model:value="orgPickerKeyword"
@@ -1117,7 +1199,9 @@ onMounted(async () => {
           {{
             selectedOrgs.length
               ? `已选 ${selectedOrgs.length} 个主体`
-              : '未选主体时表示该地区全部主体'
+              : subscriptions[orgPickerIndex]?.excludeSupplierAccounts
+                ? '未选主体时表示该地区全部非供应商大户'
+                : '未选主体时表示该地区全部主体'
           }}
         </n-text>
         <div v-if="!orgHits.length" class="empty-inline">
@@ -1447,6 +1531,10 @@ onMounted(async () => {
   grid-column: 1 / -1;
 }
 
+.account-status-field {
+  grid-column: 1 / -1;
+}
+
 .bill-month-label {
   font-size: 13px;
 }
@@ -1478,6 +1566,13 @@ onMounted(async () => {
   gap: 8px;
 }
 
+.filter-switch-row .filter-switch-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .filter-title {
   font-size: 13px;
   font-weight: 600;
@@ -1496,6 +1591,18 @@ onMounted(async () => {
 .org-picker {
   display: grid;
   gap: 12px;
+}
+
+.org-picker-exclude {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.org-picker-exclude-label {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .org-search-row {

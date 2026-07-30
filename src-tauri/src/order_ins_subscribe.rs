@@ -17,11 +17,21 @@ const CONFIG_FILE_NAME: &str = "order-ins-subscribe.json";
 const RESULT_FILE_NAME: &str = "order-ins-subscribe-result.json";
 const MANAGE_API_BASE: &str = "https://gateway.yunsheng.cn/shebaotong7-manage-api";
 const SECOND_PAGE_LIST_PATH: &str = "/operateOrderIns/secondPageList";
+const ORG_ACCOUNT_PAGE_LIST_PATH: &str = "/orgAccount/pageList";
+
+/// 非供应商大户账户类型（云生 `accountTypes`；2 = 供应商大户）。
+pub const NON_SUPPLIER_ACCOUNT_TYPES: [i32; 3] = [1, 3, 4];
 
 /// 新建订阅默认订单状态：待受理/已受理/反馈中/待审核/受理中。
 #[allow(dead_code)] // 供领域测试与前端新建语义对齐；空 orderStates 表示不限，故不挂 serde default
 pub fn default_order_states() -> Vec<i32> {
     vec![1, 2, 3, 7, 8]
+}
+
+/// 新建订阅默认办理类型：报增/停缴/补缴。
+#[allow(dead_code)]
+pub fn default_account_statuses() -> Vec<i32> {
+    vec![1, 3, 4]
 }
 
 fn default_bill_month_token() -> String {
@@ -72,18 +82,21 @@ pub struct Subscription {
     pub area_id: i64,
     #[serde(default)]
     pub area_name: String,
-    /// 可选多选；空 = 该地区全部主体。
+    /// 可选多选；空 = 该地区全部主体（若开启排除供应商大户则执行前展开为非供应商大户 ID 列表）。
     #[serde(default)]
     pub org_accounts: Vec<OrgAccountRef>,
+    /// 为 true 时：主体选择器只列非供应商大户；未选主体执行时按非供应商大户全量查询。
+    #[serde(default = "default_true")]
+    pub exclude_supplier_accounts: bool,
     /// 起始账单月：`prev` / `current` / `next` / `YYYYMM`；默认当月。
     #[serde(default = "default_bill_month_token")]
     pub bill_month1: String,
     /// 结束账单月：`prev` / `current` / `next` / `YYYYMM`；默认当月。
     #[serde(default = "default_bill_month_token")]
     pub bill_month2: String,
-    /// 办理类型：1报增 2在缴 3停缴 4补缴 5特殊补缴；0=未选（必填，无默认勾选）。
+    /// 办理类型多选：1报增 2在缴 3停缴 4补缴 5特殊补缴；空=未选（必填）。
     #[serde(default)]
-    pub account_status: i32,
+    pub account_statuses: Vec<i32>,
     #[serde(default)]
     pub order_states: Vec<i32>,
     #[serde(default)]
@@ -100,9 +113,10 @@ impl Subscription {
             area_id: 0,
             area_name: String::new(),
             org_accounts: Vec::new(),
+            exclude_supplier_accounts: true,
             bill_month1: default_bill_month_token(),
             bill_month2: default_bill_month_token(),
-            account_status: 0,
+            account_statuses: default_account_statuses(),
             order_states: default_order_states(),
             ins_codes: Vec::new(),
         }
@@ -162,6 +176,9 @@ pub struct SearchOrgAccountsRequest {
     pub page_no: u32,
     #[serde(default = "default_page_size")]
     pub page_size: u32,
+    /// 为 true 时只返回非供应商大户（`accountTypes=[1,3,4]`）。
+    #[serde(default = "default_true")]
+    pub exclude_supplier_accounts: bool,
 }
 
 fn default_page_no() -> u32 {
@@ -312,11 +329,14 @@ pub struct SubscriptionRunResult {
     pub area_name: String,
     #[serde(default)]
     pub org_count: i64,
-    /// 展示用账单月，如 `202607` 或 `202606~202607`
+    /// 展示用账单月，如 `202607` 或 `202606~202607`（来自筛选条件）
     pub bill_month: String,
-    /// 办理类型（accountStatus）
+    /// 展示用费用月，从响应 records 的 `feeMonth` 去重汇总；旧快照缺省为空
     #[serde(default)]
-    pub account_status: i32,
+    pub fee_month: String,
+    /// 办理类型列表（accountStatuses）
+    #[serde(default)]
+    pub account_statuses: Vec<i32>,
     /// 已选险种编码；空 = 不限
     #[serde(default)]
     pub ins_codes: Vec<i32>,
@@ -476,10 +496,10 @@ pub fn normalize_subscription(sub: &mut Subscription) {
     sub.bill_month1 = normalize_bill_month_token(&sub.bill_month1);
     sub.bill_month2 = normalize_bill_month_token(&sub.bill_month2);
 
-    // 办理类型必选但不预填：非法值归零，由校验拦截。
-    if !(1..=5).contains(&sub.account_status) {
-        sub.account_status = 0;
-    }
+    sub.account_statuses
+        .retain(|s| (1..=5).contains(s));
+    sub.account_statuses.sort_unstable();
+    sub.account_statuses.dedup();
 
     sub.order_states.retain(|s| (1..=8).contains(s) && *s != 6);
     sub.ins_codes.sort_unstable();
@@ -497,7 +517,7 @@ fn validate_config(config: &OrderInsSubscribeConfig) -> Result<(), String> {
         if sub.area_id <= 0 {
             return Err(format!("{label}：请选择地区"));
         }
-        if !(1..=5).contains(&sub.account_status) {
+        if sub.account_statuses.is_empty() {
             return Err(format!("{label}：请选择办理类型"));
         }
         if let Err(err) = resolve_bill_months(sub, today) {
@@ -570,6 +590,38 @@ pub fn format_bill_month_display(bill_month1: &str, bill_month2: &str) -> String
     }
 }
 
+/// 从 secondPageList 响应 records 提取合法 `feeMonth`（YYYYMM），去重排序。
+pub fn extract_fee_months_from_body(body: &Value) -> Vec<String> {
+    let mut months = std::collections::BTreeSet::new();
+    for record in extract_records(body) {
+        let raw = record
+            .get("feeMonth")
+            .or_else(|| record.get("fee_month"))
+            .map(value_as_str)
+            .unwrap_or_default();
+        let trimmed = raw.trim();
+        if is_valid_bill_month(trimmed) {
+            months.insert(trimmed.to_string());
+        }
+    }
+    months.into_iter().collect()
+}
+
+/// 将多个费用月格式化为展示串：空 / 单月 / `a、b、c`。
+pub fn format_fee_months_display(months: &[String]) -> String {
+    match months.len() {
+        0 => String::new(),
+        1 => months[0].clone(),
+        _ => months.join("、"),
+    }
+}
+
+fn merge_fee_months(into: &mut std::collections::BTreeSet<String>, body: &Value) {
+    for m in extract_fee_months_from_body(body) {
+        into.insert(m);
+    }
+}
+
 /// 构造 operateOrderIns/secondPageList 请求体。
 /// 无主体时省略 `orgAccountIds` 键。
 pub fn build_second_page_list_body(sub: &Subscription, bill_month1: &str, bill_month2: &str) -> Value {
@@ -579,7 +631,7 @@ pub fn build_second_page_list_body(sub: &Subscription, bill_month1: &str, bill_m
     map.insert("cancelFlag".into(), json!(0));
     map.insert("latest".into(), json!(1));
     map.insert("noCheckQuery".into(), json!(0));
-    map.insert("accountStatus".into(), json!(sub.account_status));
+    map.insert("accountStatusList".into(), json!(sub.account_statuses));
     map.insert("areaIds".into(), json!([sub.area_id]));
     map.insert("billMonth1".into(), json!(bill_month1));
     map.insert("billMonth2".into(), json!(bill_month2));
@@ -634,6 +686,7 @@ pub fn extract_data_total(body: &Value) -> i64 {
 pub fn aggregate_subscription_success(
     sub: &Subscription,
     bill_month_display: &str,
+    fee_month_display: &str,
     total: i64,
 ) -> SubscriptionRunResult {
     SubscriptionRunResult {
@@ -641,7 +694,8 @@ pub fn aggregate_subscription_success(
         area_name: sub.area_name.clone(),
         org_count: sub.org_accounts.len() as i64,
         bill_month: bill_month_display.to_string(),
-        account_status: sub.account_status,
+        fee_month: fee_month_display.to_string(),
+        account_statuses: sub.account_statuses.clone(),
         ins_codes: sub.ins_codes.clone(),
         success: true,
         error: None,
@@ -660,7 +714,8 @@ pub fn aggregate_subscription_error(
         area_name: sub.area_name.clone(),
         org_count: sub.org_accounts.len() as i64,
         bill_month: bill_month_display.to_string(),
-        account_status: sub.account_status,
+        fee_month: String::new(),
+        account_statuses: sub.account_statuses.clone(),
         ins_codes: sub.ins_codes.clone(),
         success: false,
         error: Some(error),
@@ -751,7 +806,14 @@ pub fn execute_subscriptions_pure(
                 Ok(body) => match yunsheng_auth::ensure_yunsheng_business_ok(&body) {
                     Ok(()) => {
                         let total = extract_data_total(&body);
-                        results.push(aggregate_subscription_success(sub, &display, total));
+                        let fee_display =
+                            format_fee_months_display(&extract_fee_months_from_body(&body));
+                        results.push(aggregate_subscription_success(
+                            sub,
+                            &display,
+                            &fee_display,
+                            total,
+                        ));
                     }
                     Err(err) => {
                         results.push(aggregate_subscription_error(sub, &display, err));
@@ -768,6 +830,7 @@ pub fn execute_subscriptions_pure(
         let mut subscribed_total: i64 = 0;
         let mut ok_groups = 0usize;
         let mut errors: Vec<String> = Vec::new();
+        let mut fee_months = std::collections::BTreeSet::new();
 
         for group in INS_GROUP_ORDER {
             let codes = selected_codes_in_group(&sub.ins_codes, group);
@@ -776,8 +839,13 @@ pub fn execute_subscriptions_pure(
             }
             let mut group_sub = sub.clone();
             group_sub.ins_codes = codes;
-            match apply_group_fetch_result(&mut breakdown, group, fetch(&group_sub, &bill1, &bill2))
-            {
+            let fetched = fetch(&group_sub, &bill1, &bill2);
+            if let Ok(ref body) = fetched {
+                if yunsheng_auth::ensure_yunsheng_business_ok(body).is_ok() {
+                    merge_fee_months(&mut fee_months, body);
+                }
+            }
+            match apply_group_fetch_result(&mut breakdown, group, fetched) {
                 Ok(total) => {
                     subscribed_total += total;
                     ok_groups += 1;
@@ -794,12 +862,14 @@ pub fn execute_subscriptions_pure(
         } else {
             Some(errors.join("；"))
         };
+        let fee_display = format_fee_months_display(&fee_months.into_iter().collect::<Vec<_>>());
         results.push(SubscriptionRunResult {
             subscription_id: sub.id.clone(),
             area_name: sub.area_name.clone(),
             org_count: sub.org_accounts.len() as i64,
             bill_month: display,
-            account_status: sub.account_status,
+            fee_month: fee_display,
+            account_statuses: sub.account_statuses.clone(),
             ins_codes: sub.ins_codes.clone(),
             success,
             error,
@@ -984,6 +1054,31 @@ async fn post_manage_api(
     .await
 }
 
+/// 构造 orgAccount/pageList 请求体。
+pub fn build_org_page_list_body(
+    area_id: i64,
+    account_name: &str,
+    page_no: u32,
+    page_size: u32,
+    exclude_supplier_accounts: bool,
+) -> Value {
+    let mut map = Map::new();
+    map.insert("pageNo".into(), json!(page_no.max(1)));
+    map.insert("pageSize".into(), json!(page_size.clamp(1, 100)));
+    map.insert("authFlag".into(), json!(1));
+    map.insert("areaId".into(), json!(area_id));
+    map.insert("accountName".into(), json!(account_name.trim()));
+    map.insert("managerUserIds".into(), json!([]));
+    map.insert("dutyUserIds".into(), json!([]));
+    if exclude_supplier_accounts {
+        map.insert(
+            "accountTypes".into(),
+            json!(NON_SUPPLIER_ACCOUNT_TYPES.to_vec()),
+        );
+    }
+    Value::Object(map)
+}
+
 pub async fn list_order_ins_subscribe_areas(app: &AppHandle) -> Result<Vec<AreaOption>, String> {
     let body = post_manage_api(Some(app), "/areaSetting/selectList", json!({})).await?;
     Ok(flatten_area_options(&body))
@@ -1008,17 +1103,67 @@ pub async fn search_order_ins_subscribe_orgs(
     };
     let body = post_manage_api(
         Some(app),
-        "/orgAccount/pageList",
-        json!({
-            "pageNo": page_no,
-            "pageSize": page_size,
-            "authFlag": 1,
-            "areaId": request.area_id,
-            "accountName": request.account_name.trim(),
-        }),
+        ORG_ACCOUNT_PAGE_LIST_PATH,
+        build_org_page_list_body(
+            request.area_id,
+            &request.account_name,
+            page_no,
+            page_size,
+            request.exclude_supplier_accounts,
+        ),
     )
     .await?;
     Ok(map_org_page_list(&body))
+}
+
+/// 分页拉取某地区主体（用于「全部主体 + 排除供应商大户」执行前展开）。
+async fn list_all_org_account_refs(
+    app: &AppHandle,
+    area_id: i64,
+    exclude_supplier_accounts: bool,
+) -> Result<Vec<OrgAccountRef>, String> {
+    if area_id <= 0 {
+        return Err("请先选择地区".to_string());
+    }
+    let page_size = 100u32;
+    let mut page_no = 1u32;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let body = post_manage_api(
+            Some(app),
+            ORG_ACCOUNT_PAGE_LIST_PATH,
+            build_org_page_list_body(area_id, "", page_no, page_size, exclude_supplier_accounts),
+        )
+        .await?;
+        yunsheng_auth::ensure_yunsheng_business_ok(&body)
+            .map_err(|e| format!("查询主体列表失败: {e}"))?;
+        let hits = map_org_page_list(&body);
+        let total = extract_data_total(&body);
+        if hits.is_empty() {
+            break;
+        }
+        let page_count = hits.len();
+        for hit in hits {
+            if seen.insert(hit.org_account_id) {
+                out.push(OrgAccountRef {
+                    org_account_id: hit.org_account_id,
+                    account_name: hit.account_name,
+                });
+            }
+        }
+        if total > 0 && (out.len() as i64) >= total {
+            break;
+        }
+        if (page_count as u32) < page_size {
+            break;
+        }
+        page_no += 1;
+        if page_no > 500 {
+            return Err("主体列表分页过多，已中止".to_string());
+        }
+    }
+    Ok(out)
 }
 
 pub fn load_order_ins_subscribe_result() -> Result<ExecutionSnapshot, String> {
@@ -1056,8 +1201,44 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
     let today = now.date_naive();
     let executed_at = now.format("%Y-%m-%dT%H:%M:%S").to_string();
 
-    let mut responses: BTreeMap<String, Result<Value, String>> = BTreeMap::new();
+    // 未选主体且排除供应商大户：按地区缓存展开非供应商大户 ID。
+    let mut area_org_cache: BTreeMap<i64, Result<Vec<OrgAccountRef>, String>> = BTreeMap::new();
     for sub in &config.subscriptions {
+        if !sub.enabled || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
+            continue;
+        }
+        if area_org_cache.contains_key(&sub.area_id) {
+            continue;
+        }
+        let fetched = list_all_org_account_refs(app, sub.area_id, true).await;
+        area_org_cache.insert(sub.area_id, fetched);
+    }
+
+    let mut working = config.clone();
+    let mut expand_errors: BTreeMap<String, String> = BTreeMap::new();
+    for sub in &mut working.subscriptions {
+        if !sub.enabled || !sub.exclude_supplier_accounts || !sub.org_accounts.is_empty() {
+            continue;
+        }
+        match area_org_cache.get(&sub.area_id) {
+            Some(Ok(orgs)) if orgs.is_empty() => {
+                expand_errors.insert(
+                    sub.id.clone(),
+                    "该地区无非供应商大户主体可查询".to_string(),
+                );
+            }
+            Some(Ok(orgs)) => {
+                sub.org_accounts = orgs.clone();
+            }
+            Some(Err(err)) => {
+                expand_errors.insert(sub.id.clone(), err.clone());
+            }
+            None => {}
+        }
+    }
+
+    let mut responses: BTreeMap<String, Result<Value, String>> = BTreeMap::new();
+    for sub in &working.subscriptions {
         if !sub.enabled {
             continue;
         }
@@ -1070,6 +1251,10 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
             if responses.contains_key(&key) {
                 continue;
             }
+            if let Some(err) = expand_errors.get(&sub.id) {
+                responses.insert(key, Err(err.clone()));
+                continue;
+            }
             let body = build_second_page_list_body(&fetch_sub, &bill1, &bill2);
             responses.insert(
                 key,
@@ -1079,7 +1264,7 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
     }
 
     let snapshot =
-        execute_subscriptions_pure(&config, today, &executed_at, &|sub, _b1, _b2| {
+        execute_subscriptions_pure(&working, today, &executed_at, &|sub, _b1, _b2| {
             responses
                 .get(&fetch_cache_key(sub))
                 .cloned()
@@ -1168,14 +1353,20 @@ mod tests {
     }
 
     #[test]
+    fn default_account_statuses_are_increase_stop_makeup() {
+        assert_eq!(default_account_statuses(), vec![1, 3, 4]);
+    }
+
+    #[test]
     fn new_subscription_uses_spec_defaults() {
         let sub = Subscription::new_default();
         assert_eq!(sub.order_states, vec![1, 2, 3, 7, 8]);
         assert!(sub.enabled);
         assert_eq!(sub.bill_month1, "current");
         assert_eq!(sub.bill_month2, "current");
-        assert_eq!(sub.account_status, 0);
+        assert_eq!(sub.account_statuses, vec![1, 3, 4]);
         assert!(sub.org_accounts.is_empty());
+        assert!(sub.exclude_supplier_accounts);
         assert!(sub.ins_codes.is_empty());
         assert!(!sub.id.is_empty());
     }
@@ -1185,19 +1376,19 @@ mod tests {
         let mut sub = Subscription::new_default();
         sub.bill_month1 = "上月".into();
         sub.bill_month2 = "202601".into();
-        sub.account_status = 99;
+        sub.account_statuses = vec![99, 3, 3, 1];
         normalize_subscription(&mut sub);
         assert_eq!(sub.bill_month1, "prev");
         assert_eq!(sub.bill_month2, "202601");
-        assert_eq!(sub.account_status, 0);
+        assert_eq!(sub.account_statuses, vec![1, 3]);
 
         sub.bill_month1 = "NEXT".into();
         normalize_subscription(&mut sub);
         assert_eq!(sub.bill_month1, "next");
 
-        sub.account_status = 3;
+        sub.account_statuses = vec![3];
         normalize_subscription(&mut sub);
-        assert_eq!(sub.account_status, 3);
+        assert_eq!(sub.account_statuses, vec![3]);
     }
 
     #[test]
@@ -1309,17 +1500,17 @@ mod tests {
                 s.org_accounts.clear();
                 s.area_id = 85;
                 s.area_name = "济南市".into();
-                s.account_status = 3;
+                s.account_statuses = vec![3];
                 s
             }],
         };
         assert!(validate_config(&config).is_ok());
 
-        config.subscriptions[0].account_status = 0;
+        config.subscriptions[0].account_statuses.clear();
         let err = validate_config(&config).expect_err("need account status");
         assert!(err.contains("办理类型"));
 
-        config.subscriptions[0].account_status = 3;
+        config.subscriptions[0].account_statuses = vec![3];
         config.subscriptions[0].bill_month1 = "202608".into();
         config.subscriptions[0].bill_month2 = "202607".into();
         let err = validate_config(&config).expect_err("start > end");
@@ -1342,9 +1533,10 @@ mod tests {
                 org_account_id: 42,
                 account_name: "Acme".into(),
             }],
+            exclude_supplier_accounts: true,
             bill_month1: "prev".into(),
             bill_month2: "202607".into(),
-            account_status: 3,
+            account_statuses: vec![1, 3],
             order_states: default_order_states(),
             ins_codes: vec![20, 30],
         };
@@ -1352,13 +1544,42 @@ mod tests {
         assert_eq!(value["orgAccounts"][0]["orgAccountId"], 42);
         assert_eq!(value["billMonth1"], "prev");
         assert_eq!(value["billMonth2"], "202607");
-        assert_eq!(value["accountStatus"], 3);
+        assert_eq!(value["accountStatuses"], json!([1, 3]));
+        assert!(value.get("accountStatus").is_none());
+        assert_eq!(value["excludeSupplierAccounts"], true);
         assert_eq!(value["orderStates"], json!([1, 2, 3, 7, 8]));
         assert!(value.get("bizTypes").is_none());
         assert!(value.get("billMonthMode").is_none());
         assert!(value.get("billMonth").is_none());
         let back: Subscription = serde_json::from_value(value).unwrap();
         assert_eq!(back, sub);
+    }
+
+    #[test]
+    fn build_org_page_list_body_includes_account_types_when_excluding() {
+        let with_types = build_org_page_list_body(314, "测试", 1, 30, true);
+        assert_eq!(with_types["areaId"], 314);
+        assert_eq!(with_types["authFlag"], 1);
+        assert_eq!(with_types["accountName"], "测试");
+        assert_eq!(with_types["accountTypes"], json!([1, 3, 4]));
+        assert_eq!(with_types["managerUserIds"], json!([]));
+        assert_eq!(with_types["dutyUserIds"], json!([]));
+
+        let all_types = build_org_page_list_body(314, "", 2, 50, false);
+        assert!(all_types.get("accountTypes").is_none());
+        assert_eq!(all_types["pageNo"], 2);
+        assert_eq!(all_types["pageSize"], 50);
+    }
+
+    #[test]
+    fn missing_exclude_supplier_field_defaults_true() {
+        let value = json!({
+            "id": "x",
+            "areaId": 1,
+            "areaName": "A"
+        });
+        let sub: Subscription = serde_json::from_value(value).unwrap();
+        assert!(sub.exclude_supplier_accounts);
     }
 
     fn sample_sub(id: &str, org_id: Option<i64>) -> Subscription {
@@ -1380,7 +1601,7 @@ mod tests {
             "code": 0,
             "data": {
                 "records": [
-                    { "empName": "张三", "insCode": 20, "orderState": 1 }
+                    { "empName": "张三", "insCode": 20, "orderState": 1, "billMonth": 202607, "feeMonth": 202608 }
                 ],
                 "total": total
             }
@@ -1458,7 +1679,7 @@ mod tests {
                 account_name: "乙".into(),
             },
         ];
-        sub.account_status = 3;
+        sub.account_statuses = vec![3];
         sub.order_states = vec![1, 2];
         sub.ins_codes = vec![20];
         let body = build_second_page_list_body(&sub, "202607", "202607");
@@ -1466,7 +1687,8 @@ mod tests {
         assert_eq!(body["cancelFlag"], 0);
         assert_eq!(body["latest"], 1);
         assert_eq!(body["noCheckQuery"], 0);
-        assert_eq!(body["accountStatus"], 3);
+        assert_eq!(body["accountStatusList"], json!([3]));
+        assert!(body.get("accountStatus").is_none());
         assert_eq!(body["areaIds"], json!([85]));
         assert_eq!(body["billMonth1"], "202607");
         assert_eq!(body["billMonth2"], "202607");
@@ -1553,6 +1775,33 @@ mod tests {
     }
 
     #[test]
+    fn extract_and_format_fee_months_from_records() {
+        let body = json!({
+            "code": 0,
+            "data": {
+                "records": [
+                    { "feeMonth": 202608 },
+                    { "feeMonth": "202607" },
+                    { "feeMonth": 202608 },
+                    { "feeMonth": "bad" },
+                    { "fee_month": 202609 }
+                ],
+                "total": 5
+            }
+        });
+        assert_eq!(
+            extract_fee_months_from_body(&body),
+            vec!["202607", "202608", "202609"]
+        );
+        assert_eq!(
+            format_fee_months_display(&extract_fee_months_from_body(&body)),
+            "202607、202608、202609"
+        );
+        assert_eq!(format_fee_months_display(&[]), "");
+        assert_eq!(format_fee_months_display(&["202607".into()]), "202607");
+    }
+
+    #[test]
     fn execute_pure_rejects_auth_failure_body_as_error() {
         let sub = sample_sub("auth-bad", Some(1));
         let config = OrderInsSubscribeConfig {
@@ -1624,6 +1873,7 @@ mod tests {
         assert!(ok.success);
         assert_eq!(ok.subscribed_total, 15);
         assert_eq!(ok.org_count, 0);
+        assert_eq!(ok.fee_month, "202608");
         let bad = snapshot
             .subscriptions
             .iter()
@@ -1632,6 +1882,7 @@ mod tests {
         assert!(!bad.success);
         assert_eq!(bad.error.as_deref(), Some("模拟失败"));
         assert_eq!(bad.subscribed_total, 0);
+        assert_eq!(bad.fee_month, "");
         assert_eq!(snapshot.total, 15);
         assert_eq!(snapshot.executed_date, "2026-07-28");
     }
@@ -1827,13 +2078,14 @@ mod tests {
             "areaName": "济南市",
             "orgCount": 0,
             "billMonth": "202607",
-            "accountStatus": 3,
+            "accountStatuses": [3],
             "insCodes": [20],
             "success": true,
             "subscribedTotal": 11
         });
         let row: SubscriptionRunResult = serde_json::from_value(raw).unwrap();
         assert_eq!(row.subscribed_total, 11);
+        assert_eq!(row.fee_month, "");
         assert_eq!(row.group_breakdown, InsGroupBreakdown::default());
         assert_eq!(row.group_breakdown.gjj, GroupCell::Dash);
     }
