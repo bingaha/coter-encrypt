@@ -87,11 +87,12 @@ const form = ref({
   idleLatestQueryIntervalSecs: 300,
   postActionRefreshDelaySecs: 5,
   trackedSourceBranch: '',
-  allowedTriggerUsers: [],
   pipelines: [],
   autoMode: false
 })
-const usersText = ref('')
+const whitelistDialogVisible = ref(false)
+const whitelistDialogIndex = ref(-1)
+const whitelistDialogText = ref('')
 let unlistenState = null
 let unlistenNotify = null
 let pollTimer = null
@@ -155,11 +156,14 @@ const loadAll = async () => {
       idleLatestQueryIntervalSecs: config.idleLatestQueryIntervalSecs ?? 300,
       postActionRefreshDelaySecs: config.postActionRefreshDelaySecs ?? 5,
       trackedSourceBranch: config.trackedSourceBranch || '',
-      allowedTriggerUsers: config.allowedTriggerUsers || [],
-      pipelines: (config.pipelines || []).map((item) => ({ ...item })),
+      pipelines: (config.pipelines || []).map((item) => ({
+        name: item.name || '',
+        pipelineId: item.pipelineId || '',
+        enabled: item.enabled !== false,
+        allowedTriggerUsers: [...(item.allowedTriggerUsers || [])]
+      })),
       autoMode: !!config.autoMode
     }
-    usersText.value = (config.allowedTriggerUsers || []).join('\n')
     applySnapshot(snapRes.data)
   } catch (error) {
     message.error(error?.message || '加载失败')
@@ -168,11 +172,13 @@ const loadAll = async () => {
   }
 }
 
-const buildConfigPayload = () => {
-  const users = usersText.value
+const parseWhitelistText = (text) =>
+  String(text || '')
     .split(/[\n,，]/)
     .map((item) => item.trim())
     .filter(Boolean)
+
+const buildConfigPayload = () => {
   return {
     token: form.value.token.trim(),
     orgId: form.value.orgId.trim(),
@@ -180,15 +186,48 @@ const buildConfigPayload = () => {
     idleLatestQueryIntervalSecs: Number(form.value.idleLatestQueryIntervalSecs) || 300,
     postActionRefreshDelaySecs: Number(form.value.postActionRefreshDelaySecs) || 5,
     trackedSourceBranch: form.value.trackedSourceBranch.trim(),
-    allowedTriggerUsers: users,
     pipelines: form.value.pipelines.map((item) => ({
       name: (item.name || '').trim(),
       pipelineId: (item.pipelineId || '').trim(),
-      enabled: !!item.enabled
+      enabled: !!item.enabled,
+      allowedTriggerUsers: [...(item.allowedTriggerUsers || [])]
     })),
     autoMode: !!form.value.autoMode
   }
 }
+
+const whitelistButtonLabel = (item) => {
+  const count = (item?.allowedTriggerUsers || []).length
+  return count ? `白名单·${count}人` : '白名单·不限'
+}
+
+const openWhitelistDialog = (index) => {
+  const item = form.value.pipelines[index]
+  if (!item) return
+  whitelistDialogIndex.value = index
+  whitelistDialogText.value = (item.allowedTriggerUsers || []).join('\n')
+  whitelistDialogVisible.value = true
+}
+
+const confirmWhitelistDialog = () => {
+  const index = whitelistDialogIndex.value
+  const item = form.value.pipelines[index]
+  if (!item) {
+    whitelistDialogVisible.value = false
+    return
+  }
+  item.allowedTriggerUsers = parseWhitelistText(whitelistDialogText.value)
+  whitelistDialogVisible.value = false
+  whitelistDialogIndex.value = -1
+  whitelistDialogText.value = ''
+}
+
+const whitelistDialogTitle = computed(() => {
+  const item = form.value.pipelines[whitelistDialogIndex.value]
+  if (!item) return '触发人白名单'
+  const name = String(item.name || '').trim() || String(item.pipelineId || '').trim() || '未命名'
+  return `触发人白名单 · ${name}`
+})
 
 const handleSave = async () => {
   saving.value = true
@@ -393,7 +432,8 @@ const addPipeline = () => {
   form.value.pipelines.push({
     name: '',
     pipelineId: '',
-    enabled: true
+    enabled: true,
+    allowedTriggerUsers: []
   })
 }
 
@@ -584,16 +624,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sub-block">
-            <div class="sub-title">触发人白名单（每行一个）</div>
-            <n-input
-              v-model:value="usersText"
-              type="textarea"
-              :rows="4"
-              placeholder="每行一个触发人姓名"
-            />
-          </div>
-
-          <div class="sub-block">
             <div class="sub-title">
               <span>流水线列表</span>
               <n-button size="tiny" secondary @click="addPipeline">
@@ -611,6 +641,9 @@ onBeforeUnmount(() => {
               <n-switch v-model:value="item.enabled" size="small" />
               <n-input v-model:value="item.name" placeholder="名称" />
               <n-input v-model:value="item.pipelineId" placeholder="Pipeline ID" />
+              <n-button size="tiny" secondary @click="openWhitelistDialog(index)">
+                {{ whitelistButtonLabel(item) }}
+              </n-button>
               <n-button quaternary circle type="error" @click="removePipeline(index)">
                 <template #icon>
                   <n-icon><TrashOutline /></n-icon>
@@ -829,6 +862,29 @@ onBeforeUnmount(() => {
     </div>
 
     <n-modal
+      v-model:show="whitelistDialogVisible"
+      preset="card"
+      :title="whitelistDialogTitle"
+      style="width: 480px"
+    >
+      <div class="whitelist-dialog-body">
+        <n-text depth="3">每行一个触发人姓名；留空表示不限制触发人</n-text>
+        <n-input
+          v-model:value="whitelistDialogText"
+          type="textarea"
+          :rows="6"
+          placeholder="每行一个触发人姓名"
+        />
+      </div>
+      <template #footer>
+        <div class="single-dialog-footer">
+          <n-button @click="whitelistDialogVisible = false">取消</n-button>
+          <n-button type="primary" @click="confirmWhitelistDialog">确定</n-button>
+        </div>
+      </template>
+    </n-modal>
+
+    <n-modal
       v-model:show="singleDialogVisible"
       preset="card"
       :title="`单次监控 · ${singleTarget.pipelineName || singleTarget.pipelineId}`"
@@ -1021,10 +1077,16 @@ onBeforeUnmount(() => {
 
 .pipeline-row {
   display: grid;
-  grid-template-columns: auto 1fr 1fr auto;
+  grid-template-columns: auto 1fr 1fr auto auto;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+}
+
+.whitelist-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .status-grid {

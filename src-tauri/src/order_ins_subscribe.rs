@@ -172,6 +172,137 @@ fn default_page_size() -> u32 {
     20
 }
 
+/// 执行结果表固定分组列（顺序即请求与展示顺序）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InsGroupKey {
+    /// 公积金
+    Gjj,
+    /// 医保
+    Medical,
+    /// 工伤
+    Injury,
+    /// 采暖
+    Heating,
+    /// 养老
+    Pension,
+    /// 失业
+    Unemployment,
+    /// 其他
+    Other,
+}
+
+pub const INS_GROUP_ORDER: [InsGroupKey; 7] = [
+    InsGroupKey::Gjj,
+    InsGroupKey::Medical,
+    InsGroupKey::Injury,
+    InsGroupKey::Heating,
+    InsGroupKey::Pension,
+    InsGroupKey::Unemployment,
+    InsGroupKey::Other,
+];
+
+/// 将险种码映射到业务分组；未知码归「其他」。
+pub fn ins_code_group(code: i32) -> InsGroupKey {
+    match code {
+        20 | 21 => InsGroupKey::Gjj,
+        40 | 41 | 42 | 43 | 44 | 45 | 100 | 124 => InsGroupKey::Medical,
+        60 | 61 => InsGroupKey::Injury,
+        110 => InsGroupKey::Heating,
+        30 => InsGroupKey::Pension,
+        50 => InsGroupKey::Unemployment,
+        _ => InsGroupKey::Other,
+    }
+}
+
+/// 分组单元格：未选 / 成功计数 / 错误。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GroupCell {
+    Dash,
+    Count { value: i64 },
+    Error { message: String },
+}
+
+impl Default for GroupCell {
+    fn default() -> Self {
+        Self::Dash
+    }
+}
+
+/// 七个固定分组列的明细（缺省全为未选，兼容旧快照）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InsGroupBreakdown {
+    #[serde(default)]
+    pub gjj: GroupCell,
+    #[serde(default)]
+    pub medical: GroupCell,
+    #[serde(default)]
+    pub injury: GroupCell,
+    #[serde(default)]
+    pub heating: GroupCell,
+    #[serde(default)]
+    pub pension: GroupCell,
+    #[serde(default)]
+    pub unemployment: GroupCell,
+    #[serde(default)]
+    pub other: GroupCell,
+}
+
+impl InsGroupBreakdown {
+    pub fn set(&mut self, key: InsGroupKey, cell: GroupCell) {
+        match key {
+            InsGroupKey::Gjj => self.gjj = cell,
+            InsGroupKey::Medical => self.medical = cell,
+            InsGroupKey::Injury => self.injury = cell,
+            InsGroupKey::Heating => self.heating = cell,
+            InsGroupKey::Pension => self.pension = cell,
+            InsGroupKey::Unemployment => self.unemployment = cell,
+            InsGroupKey::Other => self.other = cell,
+        }
+    }
+}
+
+/// 从已选险种中取出某组的码（保持已选顺序，去重由 normalize 保证）。
+pub fn selected_codes_in_group(ins_codes: &[i32], group: InsGroupKey) -> Vec<i32> {
+    ins_codes
+        .iter()
+        .copied()
+        .filter(|code| ins_code_group(*code) == group)
+        .collect()
+}
+
+/// 按固定组顺序生成需要发起的查询订阅（覆盖 `ins_codes`）；空筛选返回原订阅一次。
+pub fn planned_fetch_subs(sub: &Subscription) -> Vec<Subscription> {
+    if sub.ins_codes.is_empty() {
+        return vec![sub.clone()];
+    }
+    INS_GROUP_ORDER
+        .iter()
+        .filter_map(|group| {
+            let codes = selected_codes_in_group(&sub.ins_codes, *group);
+            if codes.is_empty() {
+                None
+            } else {
+                let mut clone = sub.clone();
+                clone.ins_codes = codes;
+                Some(clone)
+            }
+        })
+        .collect()
+}
+
+fn fetch_cache_key(sub: &Subscription) -> String {
+    let mut codes = sub.ins_codes.clone();
+    codes.sort_unstable();
+    let codes_part = codes
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}|{codes_part}", sub.id)
+}
+
 /// 单条订阅的执行结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -192,8 +323,11 @@ pub struct SubscriptionRunResult {
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// 成功时 = 响应 `data.total`
+    /// 成功时 = 响应 `data.total`；有分组筛选时 = 成功组计数之和
     pub subscribed_total: i64,
+    /// 分组明细；旧快照缺省为全未选
+    #[serde(default)]
+    pub group_breakdown: InsGroupBreakdown,
 }
 
 /// 一次执行的结果快照（独立落盘）。
@@ -512,6 +646,7 @@ pub fn aggregate_subscription_success(
         success: true,
         error: None,
         subscribed_total: total.max(0),
+        group_breakdown: InsGroupBreakdown::default(),
     }
 }
 
@@ -530,6 +665,41 @@ pub fn aggregate_subscription_error(
         success: false,
         error: Some(error),
         subscribed_total: 0,
+        group_breakdown: InsGroupBreakdown::default(),
+    }
+}
+
+fn apply_group_fetch_result(
+    breakdown: &mut InsGroupBreakdown,
+    group: InsGroupKey,
+    fetched: Result<Value, String>,
+) -> Result<i64, String> {
+    match fetched {
+        Ok(body) => match yunsheng_auth::ensure_yunsheng_business_ok(&body) {
+            Ok(()) => {
+                let total = extract_data_total(&body).max(0);
+                breakdown.set(group, GroupCell::Count { value: total });
+                Ok(total)
+            }
+            Err(err) => {
+                breakdown.set(
+                    group,
+                    GroupCell::Error {
+                        message: err.clone(),
+                    },
+                );
+                Err(err)
+            }
+        },
+        Err(err) => {
+            breakdown.set(
+                group,
+                GroupCell::Error {
+                    message: err.clone(),
+                },
+            );
+            Err(err)
+        }
     }
 }
 
@@ -553,6 +723,7 @@ pub fn build_execution_snapshot(
 }
 
 /// 纯领域：对启用订阅用注入的 secondPageList 响应（或错误）聚合；disabled 跳过。
+/// 有险种筛选时按组串行多次调用 fetch（每次 `sub.ins_codes` 仅为该组码）；空筛选调用一次。
 /// fetch 签名：(sub, bill_month1, bill_month2) → 响应或错误。
 pub fn execute_subscriptions_pure(
     config: &OrderInsSubscribeConfig,
@@ -574,20 +745,67 @@ pub fn execute_subscriptions_pure(
             }
         };
         let display = format_bill_month_display(&bill1, &bill2);
-        match fetch(sub, &bill1, &bill2) {
-            Ok(body) => match yunsheng_auth::ensure_yunsheng_business_ok(&body) {
-                Ok(()) => {
-                    let total = extract_data_total(&body);
-                    results.push(aggregate_subscription_success(sub, &display, total));
-                }
+
+        if sub.ins_codes.is_empty() {
+            match fetch(sub, &bill1, &bill2) {
+                Ok(body) => match yunsheng_auth::ensure_yunsheng_business_ok(&body) {
+                    Ok(()) => {
+                        let total = extract_data_total(&body);
+                        results.push(aggregate_subscription_success(sub, &display, total));
+                    }
+                    Err(err) => {
+                        results.push(aggregate_subscription_error(sub, &display, err));
+                    }
+                },
                 Err(err) => {
                     results.push(aggregate_subscription_error(sub, &display, err));
                 }
-            },
-            Err(err) => {
-                results.push(aggregate_subscription_error(sub, &display, err));
+            }
+            continue;
+        }
+
+        let mut breakdown = InsGroupBreakdown::default();
+        let mut subscribed_total: i64 = 0;
+        let mut ok_groups = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        for group in INS_GROUP_ORDER {
+            let codes = selected_codes_in_group(&sub.ins_codes, group);
+            if codes.is_empty() {
+                continue;
+            }
+            let mut group_sub = sub.clone();
+            group_sub.ins_codes = codes;
+            match apply_group_fetch_result(&mut breakdown, group, fetch(&group_sub, &bill1, &bill2))
+            {
+                Ok(total) => {
+                    subscribed_total += total;
+                    ok_groups += 1;
+                }
+                Err(err) => {
+                    errors.push(err);
+                }
             }
         }
+
+        let success = ok_groups > 0;
+        let error = if errors.is_empty() {
+            None
+        } else {
+            Some(errors.join("；"))
+        };
+        results.push(SubscriptionRunResult {
+            subscription_id: sub.id.clone(),
+            area_name: sub.area_name.clone(),
+            org_count: sub.org_accounts.len() as i64,
+            bill_month: display,
+            account_status: sub.account_status,
+            ins_codes: sub.ins_codes.clone(),
+            success,
+            error,
+            subscribed_total: if success { subscribed_total } else { 0 },
+            group_breakdown: breakdown,
+        });
     }
     build_execution_snapshot(executed_at.to_string(), executed_date, results)
 }
@@ -831,7 +1049,7 @@ fn save_order_ins_subscribe_result_to_disk(snapshot: &ExecutionSnapshot) -> Resu
     Ok(())
 }
 
-/// 手动「立即执行」：对所有启用订阅各查 secondPageList 并覆盖结果快照。
+/// 手动「立即执行」：对所有启用订阅按组串行查 secondPageList 并覆盖结果快照。
 pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSnapshot, String> {
     let config = load_order_ins_subscribe_config()?;
     let now = chrono::Local::now();
@@ -845,22 +1063,25 @@ pub async fn run_order_ins_subscribe_now(app: &AppHandle) -> Result<ExecutionSna
         }
         let (bill1, bill2) = match resolve_bill_months(sub, today) {
             Ok(pair) => pair,
-            Err(err) => {
-                responses.insert(sub.id.clone(), Err(err));
+            Err(_) => continue,
+        };
+        for fetch_sub in planned_fetch_subs(sub) {
+            let key = fetch_cache_key(&fetch_sub);
+            if responses.contains_key(&key) {
                 continue;
             }
-        };
-        let body = build_second_page_list_body(sub, &bill1, &bill2);
-        responses.insert(
-            sub.id.clone(),
-            post_manage_api(Some(app), SECOND_PAGE_LIST_PATH, body).await,
-        );
+            let body = build_second_page_list_body(&fetch_sub, &bill1, &bill2);
+            responses.insert(
+                key,
+                post_manage_api(Some(app), SECOND_PAGE_LIST_PATH, body).await,
+            );
+        }
     }
 
     let snapshot =
         execute_subscriptions_pure(&config, today, &executed_at, &|sub, _b1, _b2| {
             responses
-                .get(&sub.id)
+                .get(&fetch_cache_key(sub))
                 .cloned()
                 .unwrap_or_else(|| Err("内部错误：缺少订阅查询结果".to_string()))
         });
@@ -1437,5 +1658,183 @@ mod tests {
             },
         );
         assert_eq!(snapshot.total, 12);
+    }
+
+    #[test]
+    fn ins_code_group_mapping_matches_spec() {
+        assert_eq!(ins_code_group(20), InsGroupKey::Gjj);
+        assert_eq!(ins_code_group(21), InsGroupKey::Gjj);
+        assert_eq!(ins_code_group(30), InsGroupKey::Pension);
+        assert_eq!(ins_code_group(40), InsGroupKey::Medical);
+        assert_eq!(ins_code_group(100), InsGroupKey::Medical);
+        assert_eq!(ins_code_group(124), InsGroupKey::Medical);
+        assert_eq!(ins_code_group(60), InsGroupKey::Injury);
+        assert_eq!(ins_code_group(61), InsGroupKey::Injury);
+        assert_eq!(ins_code_group(110), InsGroupKey::Heating);
+        assert_eq!(ins_code_group(50), InsGroupKey::Unemployment);
+        assert_eq!(ins_code_group(70), InsGroupKey::Other);
+        assert_eq!(ins_code_group(9999), InsGroupKey::Other);
+    }
+
+    #[test]
+    fn planned_fetch_subs_splits_by_group_order() {
+        let mut sub = sample_sub("g", None);
+        sub.ins_codes = vec![30, 20, 21, 50, 70];
+        let planned = planned_fetch_subs(&sub);
+        assert_eq!(planned.len(), 4);
+        // ORDER: Gjj → Medical → Injury → Heating → Pension → Unemployment → Other
+        assert_eq!(planned[0].ins_codes, vec![20, 21]);
+        assert_eq!(planned[1].ins_codes, vec![30]);
+        assert_eq!(planned[2].ins_codes, vec![50]);
+        assert_eq!(planned[3].ins_codes, vec![70]);
+
+        let empty = sample_sub("e", None);
+        let once = planned_fetch_subs(&empty);
+        assert_eq!(once.len(), 1);
+        assert!(once[0].ins_codes.is_empty());
+    }
+
+    #[test]
+    fn execute_pure_unlimited_keeps_group_dash() {
+        let sub = sample_sub("u", None);
+        let config = OrderInsSubscribeConfig {
+            auto_run_on_startup: false,
+            subscriptions: vec![sub],
+        };
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let snapshot = execute_subscriptions_pure(
+            &config,
+            now,
+            "2026-07-28T12:00:00",
+            &|_, _, _| Ok(second_page_fixture(9)),
+        );
+        let row = &snapshot.subscriptions[0];
+        assert!(row.success);
+        assert_eq!(row.subscribed_total, 9);
+        assert_eq!(row.group_breakdown.gjj, GroupCell::Dash);
+        assert_eq!(row.group_breakdown.medical, GroupCell::Dash);
+        assert_eq!(row.group_breakdown.pension, GroupCell::Dash);
+    }
+
+    #[test]
+    fn execute_pure_groups_requests_and_sums_success_cells() {
+        let mut sub = sample_sub("g", None);
+        sub.ins_codes = vec![20, 21, 40, 30]; // gjj + medical + pension; no 失业
+        let config = OrderInsSubscribeConfig {
+            auto_run_on_startup: false,
+            subscriptions: vec![sub],
+        };
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let seen = std::cell::RefCell::new(Vec::<Vec<i32>>::new());
+        let snapshot = execute_subscriptions_pure(
+            &config,
+            now,
+            "2026-07-28T12:00:00",
+            &|s, _, _| {
+                seen.borrow_mut().push(s.ins_codes.clone());
+                let total = match s.ins_codes.as_slice() {
+                    [20, 21] => 3,
+                    [40] => 0,
+                    [30] => 5,
+                    other => panic!("unexpected codes: {other:?}"),
+                };
+                Ok(second_page_fixture(total))
+            },
+        );
+        assert_eq!(
+            seen.into_inner(),
+            vec![vec![20, 21], vec![40], vec![30]]
+        );
+        let row = &snapshot.subscriptions[0];
+        assert!(row.success);
+        assert_eq!(row.subscribed_total, 8);
+        assert_eq!(row.group_breakdown.gjj, GroupCell::Count { value: 3 });
+        assert_eq!(row.group_breakdown.medical, GroupCell::Count { value: 0 });
+        assert_eq!(row.group_breakdown.pension, GroupCell::Count { value: 5 });
+        assert_eq!(row.group_breakdown.unemployment, GroupCell::Dash);
+        assert_eq!(row.group_breakdown.injury, GroupCell::Dash);
+        assert_eq!(snapshot.total, 8);
+    }
+
+    #[test]
+    fn execute_pure_partial_group_failure_keeps_success_totals() {
+        let mut sub = sample_sub("p", None);
+        sub.ins_codes = vec![20, 30];
+        let config = OrderInsSubscribeConfig {
+            auto_run_on_startup: false,
+            subscriptions: vec![sub],
+        };
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let snapshot = execute_subscriptions_pure(
+            &config,
+            now,
+            "2026-07-28T12:00:00",
+            &|s, _, _| {
+                if s.ins_codes == vec![30] {
+                    Err("养老失败".into())
+                } else {
+                    Ok(second_page_fixture(4))
+                }
+            },
+        );
+        let row = &snapshot.subscriptions[0];
+        assert!(row.success);
+        assert_eq!(row.subscribed_total, 4);
+        assert_eq!(row.group_breakdown.gjj, GroupCell::Count { value: 4 });
+        assert_eq!(
+            row.group_breakdown.pension,
+            GroupCell::Error {
+                message: "养老失败".into()
+            }
+        );
+        assert!(row.error.as_deref().unwrap_or("").contains("养老失败"));
+        assert_eq!(snapshot.total, 4);
+    }
+
+    #[test]
+    fn execute_pure_all_groups_fail_marks_row_failed() {
+        let mut sub = sample_sub("f", None);
+        sub.ins_codes = vec![20, 50];
+        let config = OrderInsSubscribeConfig {
+            auto_run_on_startup: false,
+            subscriptions: vec![sub],
+        };
+        let now = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let snapshot = execute_subscriptions_pure(
+            &config,
+            now,
+            "2026-07-28T12:00:00",
+            &|_, _, _| Err("全挂".into()),
+        );
+        let row = &snapshot.subscriptions[0];
+        assert!(!row.success);
+        assert_eq!(row.subscribed_total, 0);
+        assert_eq!(snapshot.total, 0);
+        assert!(matches!(
+            &row.group_breakdown.gjj,
+            GroupCell::Error { message } if message == "全挂"
+        ));
+        assert!(matches!(
+            &row.group_breakdown.unemployment,
+            GroupCell::Error { message } if message == "全挂"
+        ));
+    }
+
+    #[test]
+    fn legacy_result_json_defaults_group_breakdown_to_dash() {
+        let raw = json!({
+            "subscriptionId": "old",
+            "areaName": "济南市",
+            "orgCount": 0,
+            "billMonth": "202607",
+            "accountStatus": 3,
+            "insCodes": [20],
+            "success": true,
+            "subscribedTotal": 11
+        });
+        let row: SubscriptionRunResult = serde_json::from_value(raw).unwrap();
+        assert_eq!(row.subscribed_total, 11);
+        assert_eq!(row.group_breakdown, InsGroupBreakdown::default());
+        assert_eq!(row.group_breakdown.gjj, GroupCell::Dash);
     }
 }

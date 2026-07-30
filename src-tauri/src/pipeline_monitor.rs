@@ -33,6 +33,8 @@ pub struct PipelineConfigItem {
     pub pipeline_id: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub allowed_trigger_users: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -48,7 +50,6 @@ pub struct PipelineMonitorConfig {
     pub idle_latest_query_interval_secs: u64,
     pub post_action_refresh_delay_secs: u64,
     pub tracked_source_branch: String,
-    pub allowed_trigger_users: Vec<String>,
     pub pipelines: Vec<PipelineConfigItem>,
     #[serde(default)]
     pub auto_mode: bool,
@@ -63,7 +64,6 @@ impl Default for PipelineMonitorConfig {
             idle_latest_query_interval_secs: 300,
             post_action_refresh_delay_secs: 5,
             tracked_source_branch: String::new(),
-            allowed_trigger_users: Vec::new(),
             pipelines: Vec::new(),
             auto_mode: false,
         }
@@ -1578,9 +1578,13 @@ async fn attach_latest_run_if_needed(
     let creator_name =
         resolve_trigger_user_name(http, &config.token, &config.org_id, &detail_data, &creator_id)
             .await;
-    if !config.allowed_trigger_users.is_empty()
-        && !config.allowed_trigger_users.contains(&creator_name)
-    {
+    let allowed_trigger_users = config
+        .pipelines
+        .iter()
+        .find(|item| item.pipeline_id == pipeline_id)
+        .map(|item| item.allowed_trigger_users.clone())
+        .unwrap_or_default();
+    if !allowed_trigger_users.is_empty() && !allowed_trigger_users.contains(&creator_name) {
         if let Some(state) = runtime.pipeline_states.get_mut(pipeline_id) {
             state.last_seen_run_id = latest_run_id.clone();
             state.next_latest_query_time = now + config.idle_latest_query_interval_secs;
@@ -2930,5 +2934,39 @@ mod tests {
         let runtime = empty_runtime_with_todos(vec![sample_todo("p1", "r1", "j1")]);
         let id = validate_todo_id("p1", "r1", "j1");
         assert!(runtime.todos.iter().any(|t| t.id == id));
+    }
+
+    #[test]
+    fn config_ignores_legacy_top_level_whitelist() {
+        let raw = json!({
+            "token": "t",
+            "orgId": "o",
+            "pollIntervalSecs": 30,
+            "idleLatestQueryIntervalSecs": 300,
+            "postActionRefreshDelaySecs": 5,
+            "trackedSourceBranch": "main",
+            "allowedTriggerUsers": ["旧全局"],
+            "pipelines": [{
+                "name": "demo",
+                "pipelineId": "p1",
+                "enabled": true,
+                "allowedTriggerUsers": ["按线"]
+            }],
+            "autoMode": false
+        });
+        let config: PipelineMonitorConfig = serde_json::from_value(raw).unwrap();
+        assert_eq!(config.pipelines.len(), 1);
+        assert_eq!(config.pipelines[0].allowed_trigger_users, vec!["按线".to_string()]);
+    }
+
+    #[test]
+    fn pipeline_item_default_whitelist_is_empty() {
+        let raw = json!({
+            "name": "demo",
+            "pipelineId": "p1"
+        });
+        let item: PipelineConfigItem = serde_json::from_value(raw).unwrap();
+        assert!(item.enabled);
+        assert!(item.allowed_trigger_users.is_empty());
     }
 }

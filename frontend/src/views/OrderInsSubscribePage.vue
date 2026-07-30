@@ -157,19 +157,70 @@ const formatInsCodesFull = (codes) => {
   return list.length ? list.join('、') : '不限'
 }
 
+/** 执行结果固定分组列（与后端 InsGroupBreakdown 字段对齐） */
+const RESULT_GROUP_COLUMNS = [
+  { title: '公积金', field: 'gjj' },
+  { title: '医保', field: 'medical' },
+  { title: '工伤', field: 'injury' },
+  { title: '采暖', field: 'heating' },
+  { title: '养老', field: 'pension' },
+  { title: '失业', field: 'unemployment' },
+  { title: '其他', field: 'other' }
+]
+
+const normalizeGroupCell = (cell) => {
+  if (!cell || typeof cell !== 'object') return { kind: 'dash' }
+  const kind = String(cell.kind || 'dash')
+  if (kind === 'count') return { kind: 'count', value: Number(cell.value) || 0 }
+  if (kind === 'error') return { kind: 'error', message: String(cell.message || '查询失败') }
+  return { kind: 'dash' }
+}
+
+const rowHasGroupError = (breakdown) =>
+  RESULT_GROUP_COLUMNS.some(({ field }) => normalizeGroupCell(breakdown?.[field]).kind === 'error')
+
+const renderGroupCell = (cell) => {
+  const normalized = normalizeGroupCell(cell)
+  if (normalized.kind === 'count') {
+    return h(
+      'span',
+      { style: { fontVariantNumeric: 'tabular-nums' } },
+      String(normalized.value)
+    )
+  }
+  if (normalized.kind === 'error') {
+    return h(
+      'span',
+      {
+        style: { color: '#d03050', cursor: 'help' },
+        title: normalized.message
+      },
+      '错误'
+    )
+  }
+  return h('span', { style: { color: 'var(--n-text-color-3)' } }, '-')
+}
+
 const resultTableRows = computed(() =>
-  (snapshot.value.subscriptions || []).map((item) => ({
-    key: String(item.subscriptionId || Math.random()),
-    success: !!item.success,
-    billMonth: item.billMonth || '—',
-    areaName: item.areaName || '—',
-    orgCount: Number(item.orgCount) || 0,
-    accountStatus: Number(item.accountStatus) || 0,
-    accountStatusText: accountStatusLabel(item.accountStatus),
-    insCodesText: formatInsCodesFull(item.insCodes),
-    pending: Number(item.subscribedTotal) || 0,
-    error: item.error || ''
-  }))
+  (snapshot.value.subscriptions || []).map((item) => {
+    const groupBreakdown = item.groupBreakdown || {}
+    const success = !!item.success
+    const partial = success && rowHasGroupError(groupBreakdown)
+    return {
+      key: String(item.subscriptionId || Math.random()),
+      success,
+      partial,
+      billMonth: item.billMonth || '—',
+      areaName: item.areaName || '—',
+      orgCount: Number(item.orgCount) || 0,
+      accountStatus: Number(item.accountStatus) || 0,
+      accountStatusText: accountStatusLabel(item.accountStatus),
+      insCodesText: formatInsCodesFull(item.insCodes),
+      pending: Number(item.subscribedTotal) || 0,
+      error: item.error || '',
+      groupBreakdown
+    }
+  })
 )
 
 const resultTableColumns = computed(() => [
@@ -201,18 +252,21 @@ const resultTableColumns = computed(() => [
   {
     title: '状态',
     key: 'success',
-    width: 64,
-    render: (row) =>
-      h(
+    width: 80,
+    render: (row) => {
+      const type = !row.success ? 'error' : row.partial ? 'warning' : 'success'
+      const label = !row.success ? '失败' : row.partial ? '部分成功' : '成功'
+      return h(
         NTag,
         {
           size: 'small',
           bordered: false,
-          type: row.success ? 'success' : 'error',
+          type,
           title: row.error || undefined
         },
-        { default: () => (row.success ? '成功' : '失败') }
+        { default: () => label }
       )
+    }
   },
   {
     title: '账单月',
@@ -220,6 +274,13 @@ const resultTableColumns = computed(() => [
     width: 120,
     ellipsis: { tooltip: true }
   },
+  ...RESULT_GROUP_COLUMNS.map(({ title, field }) => ({
+    title,
+    key: `group-${field}`,
+    width: 64,
+    align: 'right',
+    render: (row) => renderGroupCell(row.groupBreakdown?.[field])
+  })),
   {
     title: '待办',
     key: 'pending',
@@ -333,18 +394,36 @@ const loadAll = async () => {
 }
 
 const handleRunNow = async () => {
+  for (const [index, sub] of subscriptions.value.entries()) {
+    if (![1, 2, 3, 4, 5].includes(Number(sub.accountStatus))) {
+      message.warning(`订阅 ${index + 1}：请选择办理类型`)
+      return
+    }
+  }
   running.value = true
   try {
+    const { data: saved } = await saveOrderInsSubscribeConfig(buildConfigPayload())
+    autoRunOnStartup.value = !!saved?.autoRunOnStartup
+    subscriptions.value = (saved?.subscriptions || []).map(normalizeSubscriptionItem)
+
     const { data } = await runOrderInsSubscribeNow()
     applySnapshot(data)
     const rows = data?.subscriptions || []
     const failedRows = rows.filter((item) => !item.success)
+    const partialRows = rows.filter((item) => {
+      if (!item.success) return false
+      const breakdown = item.groupBreakdown || {}
+      return RESULT_GROUP_COLUMNS.some(
+        ({ field }) => normalizeGroupCell(breakdown[field]).kind === 'error'
+      )
+    })
     if (failedRows.length > 0 && failedRows.length === rows.length) {
       const tip = failedRows[0]?.error || '全部订阅查询失败'
       message.error(`执行失败：${tip}`)
-    } else if (failedRows.length > 0) {
+    } else if (failedRows.length > 0 || partialRows.length > 0) {
       message.warning(
-        `执行完成：待办 ${data?.total ?? 0}，${failedRows.length} 条订阅失败`
+        `执行完成：待办 ${data?.total ?? 0}，${failedRows.length} 条失败` +
+          (partialRows.length ? `，${partialRows.length} 条部分成功` : '')
       )
     } else {
       message.success(`执行完成：待办总数 ${data?.total ?? 0}`)
@@ -646,9 +725,9 @@ onMounted(async () => {
               <template v-if="hasSnapshot">
                 上次执行 {{ snapshot.executedAt || '—' }} · 待办总数
                 <span class="total-num">{{ snapshot.total }}</span>
-                （每条订阅待办 = 上游险种订单列表 total）
+                （有险种筛选时按组拆查；待办 = 成功分组合计）
               </template>
-              <template v-else>尚未执行；保存订阅后点击「立即执行」</template>
+              <template v-else>尚未执行；点击「立即执行」会先保存全部订阅再查询</template>
             </n-text>
           </div>
         </div>
@@ -666,7 +745,7 @@ onMounted(async () => {
           :columns="resultTableColumns"
           :data="resultTableRows"
           :row-key="(row) => row.key"
-          :scroll-x="720"
+          :scroll-x="1280"
           :max-height="360"
         />
       </section>
