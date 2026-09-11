@@ -184,13 +184,18 @@ async fn open_browser_with_url_cookie_header(
 }
 
 #[tauri::command]
-async fn transfer_oss_key(
-    oss_key: String,
+fn detect_oss_keys(text: String) -> Vec<String> {
+    oss_transfer::detect_oss_keys(&text)
+}
+
+#[tauri::command]
+async fn transfer_oss_text(
+    text: String,
     direction: String,
     proxy_state: tauri::State<'_, http_client::HttpProxyState>,
-) -> Result<oss_transfer::OssTransferResult, String> {
+) -> Result<oss_transfer::OssTextTransferResult, String> {
     let proxy = proxy_state.get();
-    oss_transfer::transfer_oss_key(&oss_key, &direction, &proxy).await
+    oss_transfer::transfer_oss_text(&text, &direction, &proxy).await
 }
 
 #[tauri::command]
@@ -515,7 +520,8 @@ fn main() {
             open_app_config_dir,
             open_default_browser_with_cookies,
             open_browser_with_url_cookie_header,
-            transfer_oss_key,
+            detect_oss_keys,
+            transfer_oss_text,
             load_oss_transfer_history,
             delete_oss_transfer_record,
             clear_oss_transfer_history,

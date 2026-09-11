@@ -220,3 +220,89 @@ update-desktop-database ~/.local/share/applications
 ```
 
 改功能后若要确认“用户双击能用”，必须以 **release / deb** 验证，不能只看 `tauri:dev` 页面是否正常。
+
+---
+
+### 4. `cargo build` / `cargo test` 链接失败：找不到 `-lwebkit2gtk-4.1`、`-lsoup-3.0`
+
+#### 现象
+
+```text
+rust-lld: error: unable to find library -lwebkit2gtk-4.1
+rust-lld: error: unable to find library -lsoup-3.0
+error: could not compile `coter-encrypt-desktop` (bin "CoterEncrypt" test) due to 1 previous error
+```
+
+`cargo check` 能过，但 `cargo build`、`cargo test --workspace`、`npm run tauri:dev`、`npm run tauri:build` 都在链接阶段失败。
+
+#### 原因
+
+不是 WebKitGTK 没装，而是**编译用的 `-dev` 包被卸载了**。要分清两类库：
+
+| 类型 | 例子 | 作用 |
+|------|------|------|
+| 运行时库 | `libwebkit2gtk-4.1-0`（提供 `libwebkit2gtk-4.1.so.0`） | 已编好的程序启动时加载 |
+| 开发包 | `libwebkit2gtk-4.1-dev`（提供 `libwebkit2gtk-4.1.so` 软链 + `webkit2gtk-4.1.pc`）、`libsoup-3.0-dev` | 供链接器和 pkg-config 使用 |
+
+链接器要的是不带版本号的 `libwebkit2gtk-4.1.so`（`-dev` 包才有），运行时的 `.so.0` 它不认；`webkit2gtk-sys` / `soup3-sys` 在构建时也靠 pkg-config 的 `.pc` 文件探测。所以：
+
+- `cargo check` 只做类型检查、不链接，**能过，会被误导**。
+- 已经编译好的 `target/debug/CoterEncrypt` 仍能运行，因为它只在运行时依赖 `.so.0`。
+- 只有 `-dev` 包缺失时才报错；运行时包缺失会在启动时报 `error while loading shared libraries`，是另一类问题。
+
+#### 为什么会“以前能用、现在突然不行”
+
+`-dev` 包常被作为其它包的依赖自动带入，卸载看似无关的工具时会被连带 `autoremove`。本仓库 2026-08-06 执行 `apt purge -y voxtype golang-go libei-dev libxkbcommon-dev scdoc` 后紧跟 `apt autoremove --purge -y`，侧删了 `libwebkit2gtk-4.1-dev`、`libsoup-3.0-dev`、`libgtk-3-dev` 等。最后一次成功构建（2026-07-30）在此次清理之前，所以“之前能用”。
+
+排查历史：
+
+```bash
+zgrep -i "webkit\|libsoup" /var/log/apt/history.log* | less
+```
+
+#### 修复
+
+```bash
+sudo apt install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libxdo-dev
+# libsoup-3.0-dev 会作为 libwebkit2gtk-4.1-dev 的依赖自动装上
+
+# 验证
+pkg-config --modversion webkit2gtk-4.1   # 应输出版本号而非报错
+cargo test --workspace                   # 链接应恢复正常
+```
+
+Tauri v2 Debian/Linux 前置依赖全套（供重装环境参考）：
+
+```bash
+sudo apt install -y build-essential curl wget file libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+```
+
+自动 sudo 不可用的环境（如本机 zsh 非交互），可用 zenity 弹窗提供密码：
+
+```bash
+cat > /tmp/zcode-askpass.sh <<'EOF'
+#!/bin/sh
+zenity --password --title="sudo 密码"
+EOF
+chmod +x /tmp/zcode-askpass.sh
+export DISPLAY=:0 SUDO_ASKPASS=/tmp/zcode-askpass.sh
+sudo -A apt install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libxdo-dev
+```
+
+#### 避免复发
+
+- **不要**用 `apt purge` 批量卸工具后无脑跟随 `apt autoremove --purge`；先 `apt autoremove --dry-run` 看会删什么。
+- 如确有需要，把关键 `-dev` 包标记为手动安装，降低被 autoremove 连带删除的概率：
+
+  ```bash
+  sudo apt-mark manual libwebkit2gtk-4.1-dev libsoup-3.0-dev
+  ```
+
+#### 注意与既有测试失败区分
+
+本仓库当前 `cargo test --workspace` 另有 5 个与本次环境无关的**既有失败**（`har::tests::*` 3 个、`executor::tests::*` 2 个，表现为 base64 期望 `hello` 实得十六进制等）。判断某失败是否为自己引入的，先 stash 改动在 HEAD 复跑对比：
+
+```bash
+git stash push -u -m wip && cargo test --workspace 2>&1 | tail -20 ; git stash pop
+```

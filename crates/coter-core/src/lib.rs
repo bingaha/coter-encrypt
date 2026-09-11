@@ -7,6 +7,7 @@
 pub mod crypto;
 pub mod executor;
 pub mod expression;
+pub mod oss_key;
 pub mod project_store;
 pub mod schema;
 pub mod validation;

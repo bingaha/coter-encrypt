@@ -1,6 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
+use coter_core::oss_key::{find_oss_keys, replace_oss_keys, OssTextSegmentKind};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +17,10 @@ const PROD_UPLOAD_URL: &str =
 const TEST_UPLOAD_URL: &str =
  "https://gwdaily.shebaotong.com/platform-oss/oss/uploadFile";
 
-const HISTORY_FILE_NAME: &str = "oss-transfer-history.json";
+// The record shape changed from the single-key era (file name / content type)
+// to a text-batch era (old key -> new key). A fresh file name avoids reading
+// unparseable legacy data; no migration is required.
+const HISTORY_FILE_NAME: &str = "oss-transfer-history-v2.json";
 
 // ---------------------------------------------------------------------------
 // Transfer history persistence
@@ -26,11 +31,9 @@ const HISTORY_FILE_NAME: &str = "oss-transfer-history.json";
 pub struct TransferRecord {
  pub id: String,
  pub timestamp: String,
- pub oss_key: String,
  pub direction: String,
- pub new_oss_key: String,
- pub file_name: String,
- pub content_type: String,
+ pub old_key: String,
+ pub new_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,9 +85,12 @@ pub fn clear_transfer_history() -> Result<(), String> {
  save_transfer_history(&[])
 }
 
-fn append_transfer_record(record: TransferRecord) -> Result<(), String> {
+fn append_transfer_records(new_records: Vec<TransferRecord>) -> Result<(), String> {
+ if new_records.is_empty() {
+ return Ok(());
+ }
  let mut records = load_transfer_history()?;
- records.push(record);
+ records.extend(new_records);
  save_transfer_history(&records)
 }
 
@@ -122,31 +128,146 @@ struct UploadFileData {
  oss_key: String,
 }
 
+/// One slice of the original text. `kind` is `plain`, `converted` or `failed`.
+pub use coter_core::oss_key::OssTextSegment;
+
+/// Result of converting one distinct OSS key found in the input text.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OssTransferResult {
- pub new_oss_key: String,
- pub file_name: String,
- pub content_type: String,
+pub struct OssKeyTransferItem {
+ pub original_key: String,
+ pub new_key: Option<String>,
+ pub error: Option<String>,
 }
 
-/// Transfer an OSS file between production and test environments.
+/// Result of converting every OSS key embedded in the input text.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OssTextTransferResult {
+ pub converted_text: String,
+ pub segments: Vec<OssTextSegment>,
+ pub detected_count: usize,
+ pub success_count: usize,
+ pub failed_count: usize,
+ pub items: Vec<OssKeyTransferItem>,
+}
+
+/// Return the OSS key candidates recognised in `text`, in source order.
 ///
-/// `direction` must be `"prod_to_test"` or `"test_to_prod"`.
-pub async fn transfer_oss_key(
- oss_key: &str,
+/// The UI calls this before converting so it can tell the user how many keys
+/// were found without performing any network work.
+pub fn detect_oss_keys(text: &str) -> Vec<String> {
+ find_oss_keys(text).into_iter().map(|m| m.value).collect()
+}
+
+/// Convert every OSS key embedded in `text` between production and test.
+///
+/// `direction` must be `"prod_to_test"` or `"test_to_prod"`. The original
+/// document is preserved verbatim except that successfully converted keys are
+/// replaced by their new values. Keys that were recognised but failed to
+/// convert stay untouched. Each distinct successful conversion is appended to
+/// the transfer history.
+pub async fn transfer_oss_text(
+ text: &str,
  direction: &str,
  proxy_config: &HttpProxyConfig,
-) -> Result<OssTransferResult, String> {
+) -> Result<OssTextTransferResult, String> {
  let (query_url, upload_url) = match direction {
  "prod_to_test" => (PROD_QUERY_URL, TEST_UPLOAD_URL),
  "test_to_prod" => (TEST_QUERY_URL, PROD_UPLOAD_URL),
  _ => return Err("无效的转换方向".to_string()),
  };
 
+ let matches = find_oss_keys(text);
+ let detected_count = matches.len();
+
+ if detected_count == 0 {
+ let (converted_text, segments) = replace_oss_keys(text, &matches, |_| None);
+ return Ok(OssTextTransferResult {
+ converted_text,
+ segments,
+ detected_count: 0,
+ success_count: 0,
+ failed_count: 0,
+ items: Vec::new(),
+ });
+ }
+
  let client = http_client::build_http_client(std::time::Duration::from_secs(60), proxy_config)?;
 
- // 1. Query source environment
+ // Distinct keys are converted once and reused; the same key may legitimately
+ // appear several times in one document.
+ let mut distinct = Vec::new();
+ let mut seen = HashSet::new();
+ for matched in &matches {
+ if seen.insert(matched.value.clone()) {
+ distinct.push(matched.value.clone());
+ }
+ }
+
+ let mut conversions: HashMap<String, Result<String, String>> = HashMap::new();
+ let mut items = Vec::new();
+ let mut new_records = Vec::new();
+ for key in &distinct {
+ let outcome = convert_single(&client, query_url, upload_url, key).await;
+ match &outcome {
+ Ok(new_key) => {
+ new_records.push(TransferRecord {
+ id: uuid_v4(),
+ timestamp: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+ direction: direction.to_string(),
+ old_key: key.clone(),
+ new_key: new_key.clone(),
+ });
+ items.push(OssKeyTransferItem {
+ original_key: key.clone(),
+ new_key: Some(new_key.clone()),
+ error: None,
+ });
+ }
+ Err(error) => {
+ items.push(OssKeyTransferItem {
+ original_key: key.clone(),
+ new_key: None,
+ error: Some(error.clone()),
+ });
+ }
+ }
+ conversions.insert(key.clone(), outcome);
+ }
+
+ let (converted_text, segments) = replace_oss_keys(text, &matches, |key| {
+ conversions.get(key).and_then(|outcome| outcome.clone().ok())
+ });
+
+ // Each occurrence is counted, so a repeated key reports the replacements the
+ // user can actually see in the output text.
+ let success_count = segments
+ .iter()
+ .filter(|segment| segment.kind == OssTextSegmentKind::Converted)
+ .count();
+
+ // History is best effort: a failure to persist must not fail the transfer.
+ let _ = append_transfer_records(new_records);
+
+ Ok(OssTextTransferResult {
+ converted_text,
+ segments,
+ detected_count,
+ success_count,
+ failed_count: detected_count - success_count,
+ items,
+ })
+}
+
+/// Query the source environment, download the file and upload it to the
+/// target environment. Returns the new OSS key.
+async fn convert_single(
+ client: &reqwest::Client,
+ query_url: &str,
+ upload_url: &str,
+ oss_key: &str,
+) -> Result<String, String> {
  let query_full_url = format!("{query_url}{oss_key}");
  let query_resp = client
  .get(&query_full_url)
@@ -170,7 +291,6 @@ pub async fn transfer_oss_key(
  .data
  .ok_or_else(|| "查询响应缺少文件信息".to_string())?;
 
- // 2. Download file from outerUrl
  let file_resp = client
  .get(&file_data.outer_url)
  .send()
@@ -189,7 +309,6 @@ pub async fn transfer_oss_key(
  .await
  .map_err(|e| format!("读取文件内容失败: {e}"))?;
 
- // 3. Upload file to target environment
  let file_part = reqwest::multipart::Part::bytes(file_bytes.to_vec())
  .file_name(file_data.file_name.clone())
  .mime_str(&file_data.content_type)
@@ -222,25 +341,7 @@ pub async fn transfer_oss_key(
  .data
  .ok_or_else(|| "上传响应缺少数据".to_string())?;
 
- let result = OssTransferResult {
- new_oss_key: upload_data.oss_key,
- file_name: file_data.file_name,
- content_type: file_data.content_type,
- };
-
- // 4. Save transfer record
- let record = TransferRecord {
- id: uuid_v4(),
- timestamp: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
- oss_key: oss_key.to_string(),
- direction: direction.to_string(),
- new_oss_key: result.new_oss_key.clone(),
- file_name: result.file_name.clone(),
- content_type: result.content_type.clone(),
- };
- let _ = append_transfer_record(record);
-
- Ok(result)
+ Ok(upload_data.oss_key)
 }
 
 fn uuid_v4() -> String {
