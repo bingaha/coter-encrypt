@@ -675,12 +675,15 @@ dependencies = [
 
 [[package]]
 name = "coter-encrypt-desktop"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
+ "aes",
+ "base64 0.22.1",
  "chrono",
  "coter-core",
  "crc32fast",
  "directories",
+ "ecb",
  "filetime",
  "futures-util",
  "notify-rust",

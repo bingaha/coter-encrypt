@@ -1,6 +1,6 @@
 [package]
 name = "coter-encrypt-desktop"
-version = "0.2.12"
+version = "0.2.13"
 description = "Coter Encrypt desktop application"
 authors = ["Coter Encrypt"]
 edition = "2021"
@@ -13,7 +13,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes = "0.8"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+ecb = { version = "0.1", features = ["alloc", "block-padding"] }
 coter-core = { path = "../crates/coter-core" }
 crc32fast = "1"
 directories = "6"

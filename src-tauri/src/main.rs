@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser_bridge;
+mod cert_info_decrypt;
 mod cert_query;
 mod crypto;
 mod executor;

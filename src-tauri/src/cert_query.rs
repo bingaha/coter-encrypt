@@ -337,11 +337,21 @@ async fn query_latest_cert(
  .map_err(|error| format!("查询 cert_info 失败: {error}"))?;
 
  row.map(|row| {
- let cert_info: Option<String> = row
+ let raw: Option<String> = row
  .try_get("cert_info")
  .map_err(|error| format!("读取 cert_info 失败: {error}"))?;
+ let raw = raw.unwrap_or_default();
+ // 新库 cert_info_enc 为加密存储：查询成功后在本机解密，页面最终展示解密后的 JSON 明文。
+ // 解密为独立实现（crate::cert_info_decrypt），不复用加解密工具代码。
+ let cert_info = if cert_column == "`cert_info_enc`" && !raw.trim().is_empty() {
+ crate::cert_info_decrypt::decrypt_cert_info_enc(&raw).map_err(|error| {
+ format!("cert_info_enc 解密失败（account_code={account_code}）: {error}")
+ })?
+ } else {
+ raw
+ };
  Ok(CertQueryCert {
- cert_info: cert_info.unwrap_or_default(),
+ cert_info,
  update_time: row.try_get("update_time").unwrap_or(None),
  })
  })
