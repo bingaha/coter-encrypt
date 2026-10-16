@@ -2725,6 +2725,46 @@ mod tests {
  );
  }
 
+ /// 福州医保：应用编码和派生密文都按文本密钥截成 16 字节，再 SM4-ECB-PKCS7 解密并 URL 解码。
+ #[test]
+ fn fujian_yibao_response_enc_data_decrypts_with_truncated_text_key() {
+ let app_code = "e19b809f92714a78a5430e18033183d4";
+ let secret = "1e085b5fb257450ebe16da051608fab6";
+ let enc_data = "DAED981C15AE9796ADE8D17695C7C4A6";
+
+ let key_material = process_sm4(
+ Some(app_code),
+ None,
+ Some("ECB"),
+ Some("pkcs7"),
+ "text",
+ "hex",
+ "text",
+ "text",
+ "uppercase",
+ secret,
+ "encrypt",
+ )
+ .unwrap();
+ assert!(key_material.starts_with("F09EB77314D41CC6"));
+
+ let decrypted = process_sm4(
+ Some(&key_material),
+ None,
+ Some("ECB"),
+ Some("pkcs7"),
+ "hex",
+ "utf-8",
+ "text",
+ "text",
+ "uppercase",
+ enc_data,
+ "decrypt",
+ )
+ .unwrap();
+ assert_eq!(process_url(&decrypted, "UTF-8", "decode").unwrap(), "null");
+ }
+
  #[test]
  fn sm4_supports_zero_and_no_padding() {
  let zero_padded = process_sm4(

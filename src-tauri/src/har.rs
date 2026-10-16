@@ -239,9 +239,26 @@ fn convert_components(config: &ProjectConfig) -> Vec<EncryptionRequest> {
  _ => String::new(),
  };
 
+ let algorithm = component.component_type.to_ascii_uppercase();
+ let operation = config_string_or_default(component_config, "operation", "encrypt");
+ // 与前端 ExecutePanel.buildBatchRequest 保持一致：Base64 缺省输出取决于操作方向
+ //（解码默认 utf-8、编码默认 base64），其它算法缺省 hex。直接默认 hex 会把
+ // Base64 解码结果做 HEX 编码，导致下游 SM4 拿到错误输入、HAR 批量全失败。
+ let output_format = match config_string(component_config, "outputFormat") {
+ Some(value) if !value.trim().is_empty() => value,
+ _ if algorithm == "BASE64" => {
+ if operation.eq_ignore_ascii_case("decode") || operation.eq_ignore_ascii_case("decrypt") {
+ "utf-8".to_string()
+ } else {
+ "base64".to_string()
+ }
+ }
+ _ => "hex".to_string(),
+ };
+
  EncryptionRequest {
- algorithm: component.component_type.to_ascii_uppercase(),
- operation: config_string_or_default(component_config, "operation", "encrypt"),
+ algorithm,
+ operation,
  data,
  key: config_string(component_config, "key"),
  iv: config_string(component_config, "iv"),
@@ -251,7 +268,7 @@ fn convert_components(config: &ProjectConfig) -> Vec<EncryptionRequest> {
  public_key: config_string(component_config, "publicKey"),
  private_key: config_string(component_config, "privateKey"),
  input_format: config_string_or_default(component_config, "inputFormat", "hex"),
- output_format: config_string_or_default(component_config, "outputFormat", "hex"),
+ output_format,
  key_format: config_string_or_default(component_config, "keyFormat", "text"),
  iv_format: config_string_or_default(component_config, "ivFormat", "text"),
  result_format: config_string_or_default(

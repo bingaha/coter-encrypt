@@ -162,7 +162,10 @@ mod tests {
  }
 
  fn component(data: &str, output_ref: &str) -> EncryptionRequest {
- algorithm_component("BASE64", data, output_ref)
+ let mut request = algorithm_component("BASE64", data, output_ref);
+ // BASE64 编码默认输出 base64（与前端/生产默认值一致），避免硬编码 hex 导致用例与行为背离。
+ request.output_format = "base64".to_string();
+ request
  }
 
  fn batch_from_project_config(
@@ -206,9 +209,23 @@ mod tests {
  _ => String::new(),
  };
 
+ let algorithm = component.component_type.to_ascii_uppercase();
+ let operation = config_string_or_default(component_config, "operation", "encrypt");
+ let output_format = match config_string(component_config, "outputFormat") {
+ Some(value) if !value.trim().is_empty() => value,
+ _ if algorithm == "BASE64" => {
+ if operation.eq_ignore_ascii_case("decode") || operation.eq_ignore_ascii_case("decrypt") {
+ "utf-8".to_string()
+ } else {
+ "base64".to_string()
+ }
+ }
+ _ => "hex".to_string(),
+ };
+
  EncryptionRequest {
- algorithm: component.component_type.to_ascii_uppercase(),
- operation: config_string_or_default(component_config, "operation", "encrypt"),
+ algorithm,
+ operation,
  data,
  key: config_string(component_config, "key"),
  iv: config_string(component_config, "iv"),
@@ -218,11 +235,7 @@ mod tests {
  public_key: config_string(component_config, "publicKey"),
  private_key: config_string(component_config, "privateKey"),
  input_format: config_string_or_default(component_config, "inputFormat", "hex"),
- output_format: config_string_or_default(
- component_config,
- "outputFormat",
- "hex",
- ),
+ output_format,
  key_format: config_string_or_default(component_config, "keyFormat", "text"),
  iv_format: config_string_or_default(component_config, "ivFormat", "text"),
  result_format: config_string_or_default(

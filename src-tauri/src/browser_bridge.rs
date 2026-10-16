@@ -603,13 +603,27 @@ fn find_mapping(area_id: &str, business_type: &str) -> Result<WebsiteUrlMapping,
  .ok_or_else(|| format!("未配置网站地址映射: area_id={area_id}, 办理类型={business_type}"))
 }
 
+/// assistant_cert.cert_info 已改为 cert_info_enc 加密存储时，查询返回的是 Base64 密文而非 JSON，
+/// 下游解析会报“不是合法 JSON”。这里给出一句可操作的提示，避免用户误以为是数据缺失。
+fn cert_info_enc_hint(cert_info: &str) -> String {
+ let trimmed = cert_info.trim();
+ if trimmed.starts_with('{') {
+  return String::new();
+ }
+ if trimmed.len() >= 64 && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=') {
+  return "（当前内容为 cert_info_enc 加密密文，需解密后才能提取 Cookie/存储值）".to_string();
+ }
+ String::new()
+}
+
 fn extract_cookies(cert_info: &str) -> Result<Vec<BridgeCookie>, String> {
  if cert_info.trim().is_empty() {
  return Ok(Vec::new());
  }
 
- let value: Value = serde_json::from_str(cert_info)
- .map_err(|error| format!("cert_info 不是合法 JSON: {error}"))?;
+ let value: Value = serde_json::from_str(cert_info).map_err(|error| {
+  format!("cert_info 不是合法 JSON: {error}{}", cert_info_enc_hint(cert_info))
+ })?;
  let Some(cookies_value) = value.get("cookies").or_else(|| value.get("cookie")) else {
  return Ok(Vec::new());
  };
@@ -809,8 +823,9 @@ fn extract_storage_value(cert_info: &str, source: &StorageSource) -> Result<Stri
  return Err("source.path 不能为空".to_string());
  }
 
- let value: Value =
- serde_json::from_str(cert_info).map_err(|error| format!("cert_info 不是合法 JSON: {error}"))?;
+ let value: Value = serde_json::from_str(cert_info).map_err(|error| {
+  format!("cert_info 不是合法 JSON: {error}{}", cert_info_enc_hint(cert_info))
+ })?;
 
  let parts: Vec<&str> = path.split('.').collect();
  let mut current = &value;

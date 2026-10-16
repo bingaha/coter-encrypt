@@ -280,21 +280,57 @@ async fn query_accounts(
  .collect()
 }
 
+async fn resolve_cert_info_column(pool: &MySqlPool) -> Result<String, String> {
+ let rows = sqlx::query(
+ r#"
+ SELECT COLUMN_NAME
+ FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE()
+ AND TABLE_NAME = 'assistant_cert'
+ AND COLUMN_NAME IN ('cert_info', 'cert_info_enc')
+ "#,
+ )
+ .fetch_all(pool)
+ .await
+ .map_err(|error| format!("检测 assistant_cert 表结构失败: {error}"))?;
+ let mut has_plain = false;
+ let mut has_enc = false;
+ for row in rows {
+  let name: Option<String> = row.try_get("COLUMN_NAME").unwrap_or(None);
+  match name.as_deref() {
+  Some("cert_info") => has_plain = true,
+  Some("cert_info_enc") => has_enc = true,
+  _ => {}
+  }
+ }
+ if has_plain {
+  Ok("`cert_info`".to_string())
+ } else if has_enc {
+  Ok("`cert_info_enc`".to_string())
+ } else {
+  Err("assistant_cert 表缺少 cert_info / cert_info_enc 列，请联系 DBA 确认表结构".to_string())
+ }
+}
+
 async fn query_latest_cert(
  pool: &MySqlPool,
  account_code: &str,
 ) -> Result<Option<CertQueryCert>, String> {
- let row = sqlx::query(
+ let cert_column = resolve_cert_info_column(pool).await?;
+ // assistant_cert.cert_info 在新库中已改为 cert_info_enc（加密存储），按实际存在的列动态查询，
+ // 并统一别名为 cert_info，保持前端接口不变。
+ let sql = format!(
  r#"
- SELECT cert_info,
+ SELECT {cert_column} AS cert_info,
  CAST(update_time AS CHAR) AS update_time
  FROM assistant_cert
  WHERE account_code = ?
  AND valid = 1
  ORDER BY update_time DESC
  LIMIT 1
- "#,
- )
+ "#
+ );
+ let row = sqlx::query(&sql)
  .bind(account_code)
  .fetch_optional(pool)
  .await
